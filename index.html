@@ -8,6 +8,8 @@
   <meta name="apple-mobile-web-app-title" content="CrewTips Admin"/>
   <meta name="theme-color" content="#0a1628"/>
   <meta name="description" content="CrewTips content admin"/>
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="apple-touch-icon" href="icon-192.png"/>
   <title>CrewTips Admin</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -152,6 +154,26 @@ function disconnectDropbox() {
 // ─────────────────────────────────────────────
 // DROPBOX READ / WRITE
 // ─────────────────────────────────────────────
+async function readFromDropbox() {
+  const token = getDbxToken();
+  if (!token) return null;
+  try {
+    const res = await fetch('https://content.dropboxapi.com/2/files/download', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Dropbox-API-Arg': JSON.stringify({ path: DBX_FILE_PATH })
+      }
+    });
+    if (res.status === 409) return null; // file doesn't exist yet
+    if (!res.ok) throw new Error('Dropbox read error ' + res.status);
+    return await res.json();
+  } catch(e) {
+    console.error('Dropbox read failed:', e);
+    return null;
+  }
+}
+
 async function writeToDropbox(data) {
   const token = getDbxToken();
   if (!token) return false;
@@ -177,6 +199,9 @@ async function writeToDropbox(data) {
 // INIT — load the current live content to edit
 // ─────────────────────────────────────────────
 async function init() {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  }
   handleOAuthCallback();
   loadCached();
   renderApp();
@@ -194,6 +219,22 @@ function loadCached() {
 }
 
 async function fetchLatest() {
+  // If Dropbox is connected, read via the authenticated API — this hits
+  // the file directly with no CDN caching, so it always reflects the very
+  // latest save (unlike the public link, which can lag by minutes/hours).
+  if (getDbxToken()) {
+    const dbxJson = await readFromDropbox();
+    if (dbxJson && dbxJson.faqs) {
+      appData = dbxJson;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+      localStorage.setItem(DBX_CACHE_KEY, JSON.stringify(appData));
+      if (adminAuthed) renderAdminSection();
+      return;
+    }
+    // Fall through to public link only if the authenticated read failed
+    // (e.g. expired token) rather than leaving stale/cached data on screen
+  }
+
   try {
     const res = await fetch(DBX_PUBLIC_URL + '&v=' + Date.now());
     if (res.ok) {
