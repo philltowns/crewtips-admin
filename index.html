@@ -77,6 +77,9 @@
     .dropbox-connect { background: #0061FF; color: #fff; border: none; border-radius: var(--radius-sm); padding: 12px 20px; font-size: 14px; font-weight: 600; font-family: var(--font); cursor: pointer; width: 100%; margin-top: 8px; }
     .dropbox-status { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #e8f5e9; border-radius: var(--radius-sm); margin-bottom: 12px; font-size: 13px; color: #2e7d32; font-weight: 500; }
     .signout-row { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; display: flex; justify-content: flex-end; }
+    .reconnect-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #fdecea; border: 1px solid rgba(200,16,46,0.25); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 14px; }
+    .reconnect-banner-text { font-size: 13px; font-weight: 600; color: var(--red-dark); }
+    .reconnect-banner-btn { background: var(--red); color: #fff; border: none; border-radius: 20px; padding: 7px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: var(--font); flex-shrink: 0; }
   </style>
 </head>
 <body>
@@ -117,6 +120,7 @@ let adminSection = 'faqs';
 let adminCatFilter = 'all';
 let editingFaqId = null;
 let editingTipId = null;
+let dropboxNeedsReconnect = false;
 
 // ─────────────────────────────────────────────
 // DROPBOX AUTH
@@ -132,8 +136,27 @@ function handleOAuthCallback() {
   const token = params.get('access_token');
   if (token) {
     localStorage.setItem(DBX_TOKEN_KEY, token);
+    dropboxNeedsReconnect = false;
     window.history.replaceState({}, document.title, window.location.pathname);
     showToast('Dropbox connected ✓');
+  }
+}
+
+// Cheap way to check whether the stored token is still valid, without
+// doing any real read/write — Dropbox tokens expire after 4 hours with
+// no silent renewal, so this is what drives the reconnect banner.
+async function checkDropboxAuth() {
+  const token = getDbxToken();
+  if (!token) { dropboxNeedsReconnect = false; return; }
+  try {
+    const res = await fetch('https://api.dropboxapi.com/2/check/user', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: 'ping' })
+    });
+    dropboxNeedsReconnect = (res.status === 401);
+  } catch(e) {
+    // Network error rather than an auth error — don't flag reconnect for this
   }
 }
 
@@ -166,6 +189,7 @@ async function readFromDropbox() {
       }
     });
     if (res.status === 409) return null; // file doesn't exist yet
+    if (res.status === 401) { dropboxNeedsReconnect = true; return null; }
     if (!res.ok) throw new Error('Dropbox read error ' + res.status);
     return await res.json();
   } catch(e) {
@@ -187,6 +211,7 @@ async function writeToDropbox(data) {
       },
       body: JSON.stringify(data, null, 2)
     });
+    if (res.status === 401) { dropboxNeedsReconnect = true; return false; }
     if (!res.ok) throw new Error('Dropbox write error ' + res.status);
     return true;
   } catch(e) {
@@ -205,6 +230,8 @@ async function init() {
   handleOAuthCallback();
   loadCached();
   renderApp();
+  await checkDropboxAuth();
+  if (adminAuthed) renderAdminPanel();
   await fetchLatest();
 }
 
@@ -265,6 +292,7 @@ async function saveAndPublish() {
   }
 
   const ok = await writeToDropbox(appData);
+  if (!ok && dropboxNeedsReconnect) renderAdminPanel(); // surface the banner immediately
   return ok;
 }
 
@@ -314,13 +342,20 @@ function checkPass() {
 function renderAdminPanel() {
   const secs = ['faqs','tips','add','categories','settings'];
   document.getElementById('mainBody').innerHTML =
-    '<div class="admin-tabs">'
+    (dropboxNeedsReconnect ? reconnectBanner() : '')
+    + '<div class="admin-tabs">'
     + secs.map(s => '<button class="admin-tab ' + (adminSection===s?'active':'') + '" onclick="switchAdminSection(\'' + s + '\')">'
       + {faqs:'FAQs',tips:'Tips',add:'Add new',categories:'Categories',settings:'Settings'}[s] + '</button>').join('')
     + '</div><div id="adminSectionBody"></div>'
     + '<div class="signout-row">'
     + '<button class="btn btn-ghost" style="font-size:12px" onclick="adminAuthed=false;renderLogin(\'\')">Sign out</button></div>';
   renderAdminSection();
+}
+
+function reconnectBanner() {
+  return '<div class="reconnect-banner">'
+    + '<span class="reconnect-banner-text">⚠️ Dropbox disconnected — changes won\'t publish</span>'
+    + '<button class="reconnect-banner-btn" onclick="connectDropbox()">Reconnect</button></div>';
 }
 
 function switchAdminSection(sec) { adminSection = sec; editingFaqId = null; editingTipId = null; renderAdminPanel(); }
@@ -395,7 +430,7 @@ function renderAdminSection() {
       + '<p style="font-size:11px;color:var(--text3);margin-top:10px">Key: lowercase, no spaces. Label: what users see.</p>';
 
   } else if (adminSection === 'settings') {
-    const connected = !!getDbxToken();
+    const connected = !!getDbxToken() && !dropboxNeedsReconnect;
     body.innerHTML =
       '<div class="pw-section">'
       + '<div class="pw-section-title">📦 Dropbox connection</div>'
