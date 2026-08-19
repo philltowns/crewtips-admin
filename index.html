@@ -113,6 +113,19 @@ const DBX_PUBLIC_URL = 'https://dl.dropboxusercontent.com/scl/fi/98o30nncoebz9ep
 // ─────────────────────────────────────────────
 const STORAGE_KEY  = 'crewtips_data';
 const PASS_KEY     = 'crewtips_pass';
+const WEBAUTHN_CRED_KEY = 'crewtips_webauthn_cred_id';
+
+function bufToBase64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function base64urlToBuf(base64url) {
+  const base64 = base64url.replace(/-/g,'+').replace(/_/g,'/');
+  const pad = base64.length % 4 === 0 ? '' : '='.repeat(4 - (base64.length % 4));
+  const binary = atob(base64 + pad);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
 
 let appData      = null;
 let adminAuthed  = false;
@@ -229,6 +242,7 @@ async function init() {
   }
   handleOAuthCallback();
   loadCached();
+  await checkWebauthnAvailable();
   renderApp();
   await checkDropboxAuth();
   if (adminAuthed) renderAdminPanel();
@@ -305,6 +319,85 @@ function escHtml(s) {
 function catName(key) { return (appData.categories && appData.categories[key]) || key; }
 
 // ─────────────────────────────────────────────
+// BIOMETRIC UNLOCK (WebAuthn, device-local only)
+//
+// There's no server here to verify a signature against, so this isn't
+// "full" remote WebAuthn — it's used purely as a local gatekeeper. That's
+// still a genuine security upgrade over the password alone: the browser
+// will only ever return a successful result from navigator.credentials.get()
+// if the device's own OS confirms a matching fingerprint/face/Windows Hello
+// check for the specific credential we registered. There's no way to fake
+// that success from JS. Each device needs its own one-time enrolment —
+// this deliberately does not sync between devices.
+// ─────────────────────────────────────────────
+let webauthnPlatformAvailable = false;
+
+async function checkWebauthnAvailable() {
+  try {
+    webauthnPlatformAvailable = !!(window.PublicKeyCredential
+      && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable());
+  } catch(e) {
+    webauthnPlatformAvailable = false;
+  }
+}
+
+function getBiometricCredId() { return localStorage.getItem(WEBAUTHN_CRED_KEY); }
+
+async function registerBiometric() {
+  try {
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rp: { name: 'CrewTips Admin', id: window.location.hostname },
+        user: {
+          id: crypto.getRandomValues(new Uint8Array(16)),
+          name: 'crewtips-admin',
+          displayName: 'CrewTips Admin'
+        },
+        pubKeyCredParams: [{ alg: -7, type: 'public-key' }, { alg: -257, type: 'public-key' }],
+        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' },
+        timeout: 60000
+      }
+    });
+    localStorage.setItem(WEBAUTHN_CRED_KEY, bufToBase64url(cred.rawId));
+    showToast('Biometric unlock enabled ✓');
+    renderAdminSection();
+  } catch(e) {
+    console.error('Biometric registration failed:', e);
+    showToast('Could not enable biometric unlock');
+  }
+}
+
+function removeBiometric() {
+  localStorage.removeItem(WEBAUTHN_CRED_KEY);
+  showToast('Biometric unlock disabled');
+  renderAdminSection();
+}
+
+async function authenticateWithBiometric(silent) {
+  const credId = getBiometricCredId();
+  if (!credId) return false;
+  try {
+    await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        allowCredentials: [{ id: base64urlToBuf(credId), type: 'public-key' }],
+        userVerification: 'required',
+        timeout: 60000
+      }
+    });
+    adminAuthed = true; adminSection = 'faqs'; adminCatFilter = 'all';
+    renderAdminPanel();
+    return true;
+  } catch(e) {
+    // Cancelled or failed — fall back to the password field silently,
+    // don't show a scary error for what's usually just "changed my mind"
+    if (!silent) console.warn('Biometric auth cancelled or failed:', e);
+    return false;
+  }
+}
+
+// ─────────────────────────────────────────────
 // APP SHELL
 // ─────────────────────────────────────────────
 function renderApp() {
@@ -318,14 +411,26 @@ function renderApp() {
 function getPass() { return localStorage.getItem(PASS_KEY) || ''; }
 
 function renderLogin(errMsg) {
+  const hasBiometric = webauthnPlatformAvailable && !!getBiometricCredId();
   document.getElementById('mainBody').innerHTML = '<div class="login-wrap">'
     + '<div class="login-logo">CT</div><h3>CrewTips Admin</h3>'
-    + '<p>Enter the admin password to manage content.</p>'
+    + '<p>' + (hasBiometric ? 'Use Face ID / fingerprint, or enter your password.' : 'Enter the admin password to manage content.') + '</p>'
     + '<div class="err" id="loginErr">' + errMsg + '</div>'
+    + (hasBiometric
+      ? '<div class="btn-row" style="margin-bottom:14px"><button class="btn btn-primary" style="width:100%" onclick="authenticateWithBiometric(false)">👆 Unlock with Face ID / Fingerprint</button></div>'
+        + '<div style="text-align:center;font-size:11px;color:var(--text3);margin-bottom:14px">— or use your password —</div>'
+      : '')
     + '<div class="field"><label class="field-label">Password</label>'
     + '<input type="password" id="pwInput" placeholder="Enter password" onkeydown="if(event.key===\'Enter\')checkPass()"/></div>'
     + '<div class="btn-row"><button class="btn btn-primary" style="width:100%" onclick="checkPass()">Sign in</button></div></div>';
-  setTimeout(() => { const el = document.getElementById('pwInput'); if(el) el.focus(); }, 120);
+
+  if (hasBiometric) {
+    // Auto-prompt immediately so opening the app is a single glance/touch —
+    // password is still right there if this is dismissed or fails
+    setTimeout(() => authenticateWithBiometric(true), 200);
+  } else {
+    setTimeout(() => { const el = document.getElementById('pwInput'); if(el) el.focus(); }, 120);
+  }
 }
 
 function checkPass() {
@@ -431,8 +536,20 @@ function renderAdminSection() {
 
   } else if (adminSection === 'settings') {
     const connected = !!getDbxToken() && !dropboxNeedsReconnect;
+    const bioEnabled = !!getBiometricCredId();
     body.innerHTML =
-      '<div class="pw-section">'
+      (webauthnPlatformAvailable
+        ? '<div class="pw-section">'
+          + '<div class="pw-section-title">👆 Biometric unlock (this device)</div>'
+          + (bioEnabled
+            ? '<div class="dropbox-status">✓ Enabled on this device</div>'
+              + '<p style="font-size:12px;color:var(--text3);margin-bottom:10px">Password still works as a backup — this only adds a faster option on this specific device.</p>'
+              + '<button class="btn btn-danger" style="width:100%" onclick="removeBiometric()">Disable on this device</button>'
+            : '<p style="font-size:13px;color:var(--text2);margin-bottom:10px">Use Face ID, fingerprint, or Windows Hello to sign in on this device, with your password as a backup. Needs setting up separately on each device.</p>'
+              + '<div class="btn-row"><button class="btn btn-primary" style="width:100%" onclick="registerBiometric()">Enable on this device</button></div>')
+          + '</div>'
+        : '')
+      + '<div class="pw-section">'
       + '<div class="pw-section-title">📦 Dropbox connection</div>'
       + (connected
         ? '<div class="dropbox-status">✓ Dropbox connected — changes publish live</div>'
