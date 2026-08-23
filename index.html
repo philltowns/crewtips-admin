@@ -54,6 +54,9 @@
     .item-row-text { flex: 1; font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .item-edit { background: none; border: none; font-size: 15px; cursor: pointer; padding: 2px 4px; border-radius: 4px; line-height: 1; flex-shrink: 0; }
     .item-del { background: none; border: none; color: var(--text3); font-size: 20px; cursor: pointer; padding: 2px 4px; border-radius: 4px; line-height: 1; font-family: var(--font); flex-shrink: 0; }
+    .fmt-toolbar { display: flex; gap: 4px; margin-bottom: 6px; }
+    .fmt-btn { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 11px; font-size: 13px; color: var(--text); cursor: pointer; font-family: var(--font); }
+    .fmt-btn:active { background: var(--surface); }
     .item-del:active { color: var(--red); background: var(--red-light); }
     .faq-cat { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 20px; white-space: nowrap; letter-spacing: 0.2px; flex-shrink: 0; }
     .cat-fusion { background: #e6f1fb; color: #185FA5; }
@@ -230,6 +233,111 @@ async function writeToDropbox(data) {
   } catch(e) {
     console.error('Dropbox write failed:', e);
     return false;
+  }
+}
+
+// ─────────────────────────────────────────────
+// IMAGES — compress, upload to Dropbox, get a direct link
+//
+// Images live in /images/ inside the app's Dropbox folder, uploaded as
+// compressed JPEGs (resized + quality-reduced client-side via canvas —
+// this matters a lot for the pilot app's shared 20GB/day bandwidth cap).
+// ─────────────────────────────────────────────
+async function compressImageFile(file, maxDim, quality) {
+  const bitmap = await createImageBitmap(file);
+  let { width, height } = bitmap;
+  if (width > maxDim || height > maxDim) {
+    const scale = maxDim / Math.max(width, height);
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, width, height);
+  return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+}
+
+async function uploadImageToDropbox(blob, filename) {
+  const token = getDbxToken();
+  if (!token) throw new Error('not connected');
+  const res = await fetch('https://content.dropboxapi.com/2/files/upload', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Dropbox-API-Arg': JSON.stringify({ path: '/images/' + filename, mode: 'add', autorename: true }),
+      'Content-Type': 'application/octet-stream'
+    },
+    body: blob
+  });
+  if (res.status === 401) { dropboxNeedsReconnect = true; throw new Error('reconnect needed'); }
+  if (!res.ok) throw new Error('upload failed ' + res.status);
+  const meta = await res.json();
+  return meta.path_lower;
+}
+
+async function getOrCreateSharedLink(path) {
+  const token = getDbxToken();
+  const res = await fetch('https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path })
+  });
+  if (res.status === 401) { dropboxNeedsReconnect = true; throw new Error('reconnect needed'); }
+  if (res.status === 409) {
+    // A link already exists for this path (shouldn't normally happen with
+    // unique filenames, but handle it) — fetch the existing one instead
+    const listRes = await fetch('https://api.dropboxapi.com/2/sharing/list_shared_links', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, direct_only: true })
+    });
+    const listData = await listRes.json();
+    if (listData.links && listData.links[0]) return listData.links[0].url;
+    throw new Error('could not retrieve existing share link');
+  }
+  if (!res.ok) throw new Error('share link creation failed ' + res.status);
+  const data = await res.json();
+  return data.url;
+}
+
+function toDirectDropboxUrl(shareUrl) {
+  try {
+    const u = new URL(shareUrl);
+    u.hostname = 'dl.dropboxusercontent.com';
+    u.searchParams.delete('dl');
+    return u.toString();
+  } catch(e) { return shareUrl; }
+}
+
+async function insertImageIntoAnswer(fileInputEl, textareaId, statusElId) {
+  const file = fileInputEl.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById(statusElId);
+  if (!getDbxToken()) {
+    showToast('Connect Dropbox first (Settings tab)');
+    fileInputEl.value = '';
+    return;
+  }
+  try {
+    statusEl.textContent = 'Compressing…';
+    const blob = await compressImageFile(file, 1600, 0.75);
+    statusEl.textContent = 'Uploading…';
+    const filename = Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.jpg';
+    const storedPath = await uploadImageToDropbox(blob, filename);
+    statusEl.textContent = 'Getting link…';
+    const shareUrl = await getOrCreateSharedLink(storedPath);
+    const directUrl = toDirectDropboxUrl(shareUrl);
+    const ta = document.getElementById(textareaId);
+    ta.value = ta.value + (ta.value === '' || ta.value.endsWith('\n') ? '' : '\n') + '[img:' + directUrl + ']\n';
+    statusEl.textContent = '';
+    showToast('Image uploaded and inserted ✓');
+  } catch(e) {
+    console.error('Image insert failed:', e);
+    statusEl.textContent = '';
+    if (dropboxNeedsReconnect) { renderAdminSection(); showToast('Dropbox disconnected — reconnect and try again'); }
+    else showToast('Image upload failed — try again');
+  } finally {
+    fileInputEl.value = '';
   }
 }
 
@@ -571,18 +679,113 @@ function renderAdminSection() {
   }
 }
 
+var editLinksList = [];
+var newLinksList = [];
+
+// ─────────────────────────────────────────────
+// ADMIN — NAMED LINKS EDITOR
+// ─────────────────────────────────────────────
+function linkRowsHtml(listVarName) {
+  return window[listVarName].map((l, i) =>
+    '<div class="link-row" style="display:flex;gap:6px;margin-bottom:6px">'
+    + '<input type="text" placeholder="Label (e.g. Staff Travel info)" value="' + escHtml(l.label) + '" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:13px;font-family:var(--font)" oninput="updateLinkField(\'' + listVarName + '\',' + i + ',\'label\',this.value)"/>'
+    + '<input type="text" placeholder="URL" value="' + escHtml(l.url) + '" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:13px;font-family:var(--font)" oninput="updateLinkField(\'' + listVarName + '\',' + i + ',\'url\',this.value)"/>'
+    + '<button type="button" class="item-del" onclick="removeLinkRow(\'' + listVarName + '\',' + i + ')">×</button>'
+    + '</div>'
+  ).join('');
+}
+
+function linksEditorHtml(listVarName) {
+  return '<div class="field"><label class="field-label">Links <span style="font-weight:400;color:var(--text3)">(optional)</span></label>'
+    + '<div id="' + listVarName + 'Rows">' + linkRowsHtml(listVarName) + '</div>'
+    + '<button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="addLinkRow(\'' + listVarName + '\')">+ Add link</button>'
+    + '<div class="field-hint">Give each link a short label instead of showing the full URL.</div></div>';
+}
+
+function updateLinkField(listVarName, idx, field, value) { window[listVarName][idx][field] = value; }
+
+function addLinkRow(listVarName) {
+  window[listVarName].push({ label: '', url: '' });
+  document.getElementById(listVarName + 'Rows').innerHTML = linkRowsHtml(listVarName);
+}
+
+function removeLinkRow(listVarName, idx) {
+  window[listVarName].splice(idx, 1);
+  document.getElementById(listVarName + 'Rows').innerHTML = linkRowsHtml(listVarName);
+}
+
+function validLinks(listVarName) {
+  return window[listVarName]
+    .map(l => ({ label: l.label.trim(), url: l.url.trim() }))
+    .filter(l => l.label && l.url);
+}
+
+// ─────────────────────────────────────────────
+// ADMIN — ANSWER FORMATTING TOOLBAR
+// ─────────────────────────────────────────────
+function formatToolbarHtml(textareaId) {
+  return '<div class="fmt-toolbar">'
+    + '<button type="button" class="fmt-btn" onclick="applyFormat(\'' + textareaId + '\',\'bold\')" title="Bold"><b>B</b></button>'
+    + '<button type="button" class="fmt-btn" onclick="applyFormat(\'' + textareaId + '\',\'italic\')" title="Italic"><i>I</i></button>'
+    + '<button type="button" class="fmt-btn" onclick="applyFormat(\'' + textareaId + '\',\'underline\')" title="Underline"><u>U</u></button>'
+    + '<button type="button" class="fmt-btn" onclick="applyBullet(\'' + textareaId + '\')" title="Bullet list">• List</button>'
+    + '</div>';
+}
+
+function applyFormat(textareaId, type) {
+  const el = document.getElementById(textareaId);
+  const start = el.selectionStart, end = el.selectionEnd;
+  const selected = el.value.substring(start, end);
+  const tags = { bold: ['[b]', '[/b]', 'bold text'], italic: ['[i]', '[/i]', 'italic text'], underline: ['[u]', '[/u]', 'underlined text'] };
+  const [openTag, closeTag, placeholder] = tags[type];
+  const text = selected || placeholder;
+  el.value = el.value.substring(0, start) + openTag + text + closeTag + el.value.substring(end);
+  const newStart = start + openTag.length;
+  el.focus();
+  el.setSelectionRange(newStart, newStart + text.length);
+}
+
+function applyBullet(textareaId) {
+  const el = document.getElementById(textareaId);
+  const start = el.selectionStart, end = el.selectionEnd;
+  if (start === end) {
+    const before = el.value.substring(0, start);
+    const after = el.value.substring(start);
+    const insertion = (before.length && !before.endsWith('\n') ? '\n' : '') + '- List item';
+    el.value = before + insertion + after;
+    const pos = before.length + insertion.length;
+    el.focus();
+    el.setSelectionRange(pos, pos);
+  } else {
+    const before = el.value.substring(0, start);
+    const selected = el.value.substring(start, end);
+    const after = el.value.substring(end);
+    const newSelected = selected.split('\n').map(l => l.startsWith('- ') ? l : '- ' + l).join('\n');
+    el.value = before + newSelected + after;
+    el.focus();
+    el.setSelectionRange(start, start + newSelected.length);
+  }
+}
+
 // ─────────────────────────────────────────────
 // ADMIN — FAQ EDIT FORM
 // ─────────────────────────────────────────────
 function faqEditForm(f) {
+  editLinksList = (f.links || []).map(l => ({ ...l }));
   const tipOptions = '<option value="">— None —</option>'
     + appData.tips.map(t => '<option value="' + t.id + '" ' + (f.seeAlso == t.id ? 'selected' : '') + '>' + escHtml(t.icon||'💡') + ' ' + escHtml(t.title) + '</option>').join('');
   return '<div class="edit-form-header">Editing FAQ</div>'
     + '<div class="field"><label class="field-label">Question</label><input type="text" id="editQ" value="' + escHtml(f.q) + '"/></div>'
     + '<div class="field"><label class="field-label">Category</label><select id="editCat">' + catOptions(f.cat) + '</select></div>'
-    + '<div class="field"><label class="field-label">Answer</label><textarea id="editA" rows="6">' + escHtml(f.a) + '</textarea>'
-    + '<div class="field-hint">Numbered steps: start lines with 1. 2. 3. — Inline tip link: [tip:Tip Title]</div></div>'
+    + '<div class="field"><label class="field-label">Answer</label>'
+    + formatToolbarHtml('editA')
+    + '<textarea id="editA" rows="6">' + escHtml(f.a) + '</textarea>'
+    + '<div class="field-hint">Numbered steps: start lines with 1. 2. 3. — Bullets: start lines with "- " — Inline tip link: [tip:Tip Title] — Image: [img:URL]</div>'
+    + '<input type="file" accept="image/*" id="imgFileEdit" style="display:none" onchange="insertImageIntoAnswer(this,\'editA\',\'imgStatusEdit\')"/>'
+    + '<div class="btn-row" style="margin-top:6px"><button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgFileEdit\').click()">📷 Insert image</button>'
+    + '<span id="imgStatusEdit" style="font-size:12px;color:var(--text3);align-self:center"></span></div></div>'
     + '<div class="field"><label class="field-label">Intranet path <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="editPath" value="' + escHtml(f.path||'') + '"/></div>'
+    + linksEditorHtml('editLinksList')
     + '<div class="field"><label class="field-label">Hidden keywords <span style="font-weight:400;color:var(--text3)">(comma-separated)</span></label>'
     + '<input type="text" id="editKeywords" value="' + escHtml(f.keywords||'') + '" placeholder="e.g. JFK, Kennedy, New York"/>'
     + '<div class="field-hint">Invisible to users but included in search.</div></div>'
@@ -598,12 +801,13 @@ async function saveFaqEdit(id) {
   const a = document.getElementById('editA').value.trim();
   const cat = document.getElementById('editCat').value;
   const path = document.getElementById('editPath').value.trim();
+  const links = validLinks('editLinksList');
   const keywords = document.getElementById('editKeywords').value.trim();
   const seeAlso = document.getElementById('editSeeAlso').value || null;
   if (!q || !a) { document.getElementById('editErr').textContent = 'Question and answer are required.'; return; }
   document.getElementById('editErr').textContent = 'Saving…';
   const idx = appData.faqs.findIndex(f => f.id === id);
-  if (idx > -1) appData.faqs[idx] = { ...appData.faqs[idx], q, a, cat, path, keywords, seeAlso: seeAlso ? Number(seeAlso) : null };
+  if (idx > -1) appData.faqs[idx] = { ...appData.faqs[idx], q, a, cat, path, links, keywords, seeAlso: seeAlso ? Number(seeAlso) : null };
   const ok = await saveAndPublish();
   editingFaqId = null; adminSection = 'faqs'; renderAdminPanel();
   showToast(ok ? 'FAQ updated and published ✓' : 'FAQ saved locally only');
@@ -644,10 +848,17 @@ function renderAddForm() {
   const body = document.getElementById('addFormBody');
   const tipOptions = '<option value="">— None —</option>' + appData.tips.map(t => '<option value="' + t.id + '">' + escHtml(t.icon||'💡') + ' ' + escHtml(t.title) + '</option>').join('');
   if (type === 'faq') {
+    newLinksList = [];
     body.innerHTML = '<div class="field"><label class="field-label">Question</label><input type="text" id="newQ" placeholder="e.g. How do I request a duty swap?"/></div>'
       + '<div class="field"><label class="field-label">Category</label><select id="newCat">' + catOptions('general') + '</select></div>'
-      + '<div class="field"><label class="field-label">Answer</label><textarea id="newA" placeholder="Full answer. Numbered steps: start lines with 1. 2. 3. — Inline tip: [tip:Tip Title]"></textarea></div>'
+      + '<div class="field"><label class="field-label">Answer</label>'
+      + formatToolbarHtml('newA')
+      + '<textarea id="newA" placeholder="Full answer. Numbered steps: start lines with 1. 2. 3. — Inline tip: [tip:Tip Title]"></textarea>'
+      + '<input type="file" accept="image/*" id="imgFileNew" style="display:none" onchange="insertImageIntoAnswer(this,\'newA\',\'imgStatusNew\')"/>'
+      + '<div class="btn-row" style="margin-top:6px"><button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgFileNew\').click()">📷 Insert image</button>'
+      + '<span id="imgStatusNew" style="font-size:12px;color:var(--text3);align-self:center"></span></div></div>'
       + '<div class="field"><label class="field-label">Intranet path <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="newPath" placeholder="e.g. Fusion → HR Self-Service → …"/></div>'
+      + linksEditorHtml('newLinksList')
       + '<div class="field"><label class="field-label">Hidden keywords <span style="font-weight:400;color:var(--text3)">(comma-separated)</span></label><input type="text" id="newKeywords" placeholder="e.g. JFK, Kennedy, New York"/></div>'
       + '<div class="field"><label class="field-label">See also tip <span style="font-weight:400;color:var(--text3)">(optional)</span></label><select id="newSeeAlso">' + tipOptions + '</select></div>'
       + '<div class="err" id="addErr"></div>'
@@ -670,11 +881,12 @@ async function addFaq() {
   const a = document.getElementById('newA').value.trim();
   const cat = document.getElementById('newCat').value;
   const path = document.getElementById('newPath').value.trim();
+  const links = validLinks('newLinksList');
   const keywords = document.getElementById('newKeywords').value.trim();
   const seeAlso = document.getElementById('newSeeAlso').value || null;
   if (!q || !a) { document.getElementById('addErr').textContent = 'Question and answer are required.'; return; }
   document.getElementById('addErr').textContent = 'Saving…';
-  appData.faqs.push({ id: Date.now(), q, cat, a, path, keywords, seeAlso: seeAlso ? Number(seeAlso) : null });
+  appData.faqs.push({ id: Date.now(), q, cat, a, path, links, keywords, seeAlso: seeAlso ? Number(seeAlso) : null });
   const ok = await saveAndPublish();
   adminSection = 'faqs'; renderAdminPanel();
   showToast(ok ? 'FAQ added and published ✓' : 'FAQ saved locally only');
