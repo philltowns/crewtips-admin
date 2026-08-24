@@ -283,6 +283,18 @@ async function getOrCreateSharedLink(path) {
     body: JSON.stringify({ path })
   });
   if (res.status === 401) { dropboxNeedsReconnect = true; throw new Error('reconnect needed'); }
+  if (res.status === 403) {
+    // Dropbox returns 403 (not 401) when the token is valid but lacks a
+    // specific permission — most likely 'sharing.write', a separate
+    // permission from the file read/write access already granted, needed
+    // only for generating shareable image links. Reconnecting picks up
+    // any permission enabled since the last login, but only if it was
+    // actually enabled in the Dropbox App Console first.
+    let missingScope = null;
+    try { const body = await res.json(); if (body.error && body.error['.tag'] === 'missing_scope') missingScope = body.error.required_scope || 'an additional permission'; } catch(e) {}
+    dropboxNeedsReconnect = true;
+    throw new Error(missingScope ? ('missing_scope:' + missingScope) : ('share link creation forbidden ' + res.status));
+  }
   if (res.status === 409) {
     // A link already exists for this path (shouldn't normally happen with
     // unique filenames, but handle it) — fetch the existing one instead
@@ -334,7 +346,14 @@ async function insertImageIntoAnswer(fileInputEl, textareaId, statusElId) {
   } catch(e) {
     console.error('Image insert failed:', e);
     statusEl.textContent = '';
-    if (dropboxNeedsReconnect) { renderAdminSection(); showToast('Dropbox disconnected — reconnect and try again'); }
+    if (dropboxNeedsReconnect) {
+      renderAdminPanel();
+      if (String(e.message).startsWith('missing_scope:')) {
+        showToast('Dropbox is missing a permission for image links — enable it in the App Console, then Reconnect');
+      } else {
+        showToast('Dropbox disconnected — reconnect and try again');
+      }
+    }
     else showToast('Image upload failed — try again');
   } finally {
     fileInputEl.value = '';
