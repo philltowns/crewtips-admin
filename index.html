@@ -134,6 +134,32 @@ let appData      = null;
 let adminAuthed  = false;
 let adminSection = 'faqs';
 let adminCatFilter = 'all';
+let adminSearchTerm = '';
+
+function searchBarHtml(placeholder) {
+  return '<div class="field" style="margin-bottom:10px"><input type="search" id="adminSearchInput" placeholder="' + placeholder + '" value="' + escHtml(adminSearchTerm) + '" oninput="onAdminSearch(this.value)" autocomplete="off"/></div>';
+}
+
+function onAdminSearch(value) {
+  adminSearchTerm = value;
+  const cursorPos = document.activeElement && document.activeElement.id === 'adminSearchInput' ? document.activeElement.selectionStart : null;
+  renderAdminSection();
+  const el = document.getElementById('adminSearchInput');
+  if (el && cursorPos !== null) { el.focus(); el.setSelectionRange(cursorPos, cursorPos); }
+}
+
+function matchesFaqSearch(f, term) {
+  if (!term) return true;
+  const tl = term.toLowerCase();
+  return f.q.toLowerCase().includes(tl) || f.a.toLowerCase().includes(tl)
+    || catName(f.cat).toLowerCase().includes(tl) || (f.keywords||'').toLowerCase().includes(tl);
+}
+
+function matchesTipSearch(t, term) {
+  if (!term) return true;
+  const tl = term.toLowerCase();
+  return t.title.toLowerCase().includes(tl) || t.text.toLowerCase().includes(tl) || catName(t.cat).toLowerCase().includes(tl);
+}
 let editingFaqId = null;
 let editingTipId = null;
 let dropboxNeedsReconnect = false;
@@ -339,8 +365,11 @@ async function insertImageIntoAnswer(fileInputEl, textareaId, statusElId) {
     statusEl.textContent = 'Getting link…';
     const shareUrl = await getOrCreateSharedLink(storedPath);
     const directUrl = toDirectDropboxUrl(shareUrl);
+    let caption = (window.prompt('Add a caption for this image? (optional — shown on the "view image" button)') || '').trim();
+    caption = caption.replace(/[|\]]/g, ''); // these characters would break the tag syntax
+    const tag = caption ? '[img:' + directUrl + '|' + caption + ']' : '[img:' + directUrl + ']';
     const ta = document.getElementById(textareaId);
-    ta.value = ta.value + (ta.value === '' || ta.value.endsWith('\n') ? '' : '\n') + '[img:' + directUrl + ']\n';
+    ta.value = ta.value + (ta.value === '' || ta.value.endsWith('\n') ? '' : '\n') + tag + '\n';
     statusEl.textContent = '';
     showToast('Image uploaded and inserted ✓');
   } catch(e) {
@@ -355,6 +384,60 @@ async function insertImageIntoAnswer(fileInputEl, textareaId, statusElId) {
       }
     }
     else showToast('Image upload failed — try again');
+  } finally {
+    fileInputEl.value = '';
+  }
+}
+
+// Uploads several images as one set — a single reveal button in the pilot
+// app shows all of them together, each with its own caption. Good for
+// step-by-step screenshot walkthroughs. Uploads happen one at a time
+// (simpler to reason about and report progress on than parallel uploads),
+// and stop with a clear error if any single image fails, rather than
+// silently inserting a half-finished set.
+async function insertImageSetIntoAnswer(fileInputEl, textareaId, statusElId) {
+  const files = Array.from(fileInputEl.files || []);
+  if (!files.length) return;
+  const statusEl = document.getElementById(statusElId);
+  if (!getDbxToken()) {
+    showToast('Connect Dropbox first (Settings tab)');
+    fileInputEl.value = '';
+    return;
+  }
+  const setTitle = (window.prompt('Title for this set of ' + files.length + ' images? (optional — shown on the "view images" button)') || '').trim().replace(/[|\]]/g, '');
+  const lines = ['[imgset:' + setTitle + ']'];
+  try {
+    for (let i = 0; i < files.length; i++) {
+      statusEl.textContent = 'Image ' + (i + 1) + ' of ' + files.length + ': compressing…';
+      const blob = await compressImageFile(files[i], 1600, 0.75);
+      statusEl.textContent = 'Image ' + (i + 1) + ' of ' + files.length + ': uploading…';
+      const filename = Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.jpg';
+      const storedPath = await uploadImageToDropbox(blob, filename);
+      statusEl.textContent = 'Image ' + (i + 1) + ' of ' + files.length + ': getting link…';
+      const shareUrl = await getOrCreateSharedLink(storedPath);
+      const directUrl = toDirectDropboxUrl(shareUrl);
+      let caption = (window.prompt('Caption for image ' + (i + 1) + ' of ' + files.length + '? (optional)') || '').trim();
+      caption = caption.replace(/[|\]]/g, '');
+      lines.push(caption ? '[img:' + directUrl + '|' + caption + ']' : '[img:' + directUrl + ']');
+    }
+    lines.push('[/imgset]');
+    const ta = document.getElementById(textareaId);
+    ta.value = ta.value + (ta.value === '' || ta.value.endsWith('\n') ? '' : '\n') + lines.join('\n') + '\n';
+    statusEl.textContent = '';
+    showToast('Image set uploaded and inserted ✓');
+  } catch(e) {
+    console.error('Image set insert failed:', e);
+    statusEl.textContent = '';
+    if (dropboxNeedsReconnect) {
+      renderAdminPanel();
+      if (String(e.message).startsWith('missing_scope:')) {
+        showToast('Dropbox is missing a permission for image links — enable it in the App Console, then Reconnect');
+      } else {
+        showToast('Dropbox disconnected — reconnect and try again');
+      }
+    } else {
+      showToast('Image set upload failed partway through — already-uploaded images in this set were not inserted');
+    }
   } finally {
     fileInputEl.value = '';
   }
@@ -590,7 +673,7 @@ function reconnectBanner() {
     + '<button class="reconnect-banner-btn" onclick="connectDropbox()">Reconnect</button></div>';
 }
 
-function switchAdminSection(sec) { adminSection = sec; editingFaqId = null; editingTipId = null; renderAdminPanel(); }
+function switchAdminSection(sec) { adminSection = sec; editingFaqId = null; editingTipId = null; adminSearchTerm = ''; renderAdminPanel(); }
 
 // ─────────────────────────────────────────────
 // ADMIN — CATEGORY FILTER
@@ -618,10 +701,11 @@ function renderAdminSection() {
   if (editingTipId !== null) { const t = appData.tips.find(x => x.id === editingTipId); if(t) { body.innerHTML = tipEditForm(t); return; } editingTipId = null; }
 
   if (adminSection === 'faqs') {
-    const filtered = adminCatFilter === 'all' ? appData.faqs : appData.faqs.filter(f => f.cat === adminCatFilter);
-    body.innerHTML = catFilterBar()
+    const filtered = (adminCatFilter === 'all' ? appData.faqs : appData.faqs.filter(f => f.cat === adminCatFilter))
+      .filter(f => matchesFaqSearch(f, adminSearchTerm));
+    body.innerHTML = searchBarHtml('Search FAQs…') + catFilterBar()
       + '<div class="item-list">'
-      + (filtered.length === 0 ? '<div class="item-list-empty">No FAQs here yet.</div>'
+      + (filtered.length === 0 ? '<div class="item-list-empty">' + (adminSearchTerm ? 'No FAQs match your search.' : 'No FAQs here yet.') + '</div>'
         : filtered.map(f => '<div class="item-row"><span class="item-row-text">' + escHtml(f.q) + '</span>'
           + '<span class="faq-cat cat-' + f.cat + '">' + escHtml(catName(f.cat)) + '</span>'
           + '<button class="item-edit" onclick="editingFaqId=' + f.id + ';renderAdminSection()">✏️</button>'
@@ -629,10 +713,11 @@ function renderAdminSection() {
       + '</div><p style="font-size:12px;color:var(--text3)">Use \'Add new\' to create a FAQ.</p>';
 
   } else if (adminSection === 'tips') {
-    const filtered = adminCatFilter === 'all' ? appData.tips : appData.tips.filter(t => t.cat === adminCatFilter);
-    body.innerHTML = catFilterBar()
+    const filtered = (adminCatFilter === 'all' ? appData.tips : appData.tips.filter(t => t.cat === adminCatFilter))
+      .filter(t => matchesTipSearch(t, adminSearchTerm));
+    body.innerHTML = searchBarHtml('Search tips…') + catFilterBar()
       + '<div class="item-list">'
-      + (filtered.length === 0 ? '<div class="item-list-empty">No tips here yet.</div>'
+      + (filtered.length === 0 ? '<div class="item-list-empty">' + (adminSearchTerm ? 'No tips match your search.' : 'No tips here yet.') + '</div>'
         : filtered.map(t => '<div class="item-row"><span style="font-size:18px;flex-shrink:0">' + escHtml(t.icon||'💡') + '</span>'
           + '<span class="item-row-text">' + escHtml(t.title) + '</span>'
           + '<button class="item-edit" onclick="editingTipId=' + t.id + ';renderAdminSection()">✏️</button>'
@@ -801,7 +886,9 @@ function faqEditForm(f) {
     + '<textarea id="editA" rows="6">' + escHtml(f.a) + '</textarea>'
     + '<div class="field-hint">Numbered steps: start lines with 1. 2. 3. — Bullets: start lines with "- " — Inline tip link: [tip:Tip Title] — Image: [img:URL]</div>'
     + '<input type="file" accept="image/*" id="imgFileEdit" style="display:none" onchange="insertImageIntoAnswer(this,\'editA\',\'imgStatusEdit\')"/>'
+    + '<input type="file" accept="image/*" multiple id="imgSetFileEdit" style="display:none" onchange="insertImageSetIntoAnswer(this,\'editA\',\'imgStatusEdit\')"/>'
     + '<div class="btn-row" style="margin-top:6px"><button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgFileEdit\').click()">📷 Insert image</button>'
+    + '<button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgSetFileEdit\').click()">📷 Insert image set</button>'
     + '<span id="imgStatusEdit" style="font-size:12px;color:var(--text3);align-self:center"></span></div></div>'
     + '<div class="field"><label class="field-label">Intranet path <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="editPath" value="' + escHtml(f.path||'') + '"/></div>'
     + linksEditorHtml('editLinksList')
@@ -838,7 +925,12 @@ async function saveFaqEdit(id) {
 function tipEditForm(t) {
   return '<div class="edit-form-header">Editing tip</div>'
     + '<div class="field"><label class="field-label">Title</label><input type="text" id="editTTitle" value="' + escHtml(t.title) + '"/></div>'
-    + '<div class="field"><label class="field-label">Tip text</label><textarea id="editTText" rows="5">' + escHtml(t.text) + '</textarea></div>'
+    + '<div class="field"><label class="field-label">Short teaser</label><textarea id="editTText" rows="3">' + escHtml(t.text) + '</textarea>'
+    + '<div class="field-hint">Shown in the Tips list. Keep it brief.</div></div>'
+    + '<div class="field"><label class="field-label">Full article <span style="font-weight:400;color:var(--text3)">(optional)</span></label>'
+    + formatToolbarHtml('editTBody')
+    + '<textarea id="editTBody" rows="6">' + escHtml(t.body||'') + '</textarea>'
+    + '<div class="field-hint">If filled in, a "Read more" link appears under the teaser, expanding to show this. Leave blank to keep the tip as just the teaser.</div></div>'
     + '<div class="field"><label class="field-label">Category</label><select id="editTCat">' + catOptions(t.cat) + '</select></div>'
     + '<div class="field"><label class="field-label">Icon (emoji)</label><input type="text" id="editTIcon" value="' + escHtml(t.icon||'💡') + '" style="width:70px"/></div>'
     + '<div class="err" id="editTErr"></div>'
@@ -849,11 +941,12 @@ function tipEditForm(t) {
 async function saveTipEdit(id) {
   const title = document.getElementById('editTTitle').value.trim();
   const text = document.getElementById('editTText').value.trim();
+  const body = document.getElementById('editTBody').value.trim();
   const cat = document.getElementById('editTCat').value;
   const icon = document.getElementById('editTIcon').value.trim() || '💡';
-  if (!title || !text) { document.getElementById('editTErr').textContent = 'Title and text are required.'; return; }
+  if (!title || !text) { document.getElementById('editTErr').textContent = 'Title and teaser are required.'; return; }
   const idx = appData.tips.findIndex(t => t.id === id);
-  if (idx > -1) appData.tips[idx] = { ...appData.tips[idx], title, text, cat, icon };
+  if (idx > -1) appData.tips[idx] = { ...appData.tips[idx], title, text, body, cat, icon };
   const ok = await saveAndPublish();
   editingTipId = null; adminSection = 'tips'; renderAdminPanel();
   showToast(ok ? 'Tip updated and published ✓' : 'Tip saved locally only');
@@ -874,7 +967,9 @@ function renderAddForm() {
       + formatToolbarHtml('newA')
       + '<textarea id="newA" placeholder="Full answer. Numbered steps: start lines with 1. 2. 3. — Inline tip: [tip:Tip Title]"></textarea>'
       + '<input type="file" accept="image/*" id="imgFileNew" style="display:none" onchange="insertImageIntoAnswer(this,\'newA\',\'imgStatusNew\')"/>'
+      + '<input type="file" accept="image/*" multiple id="imgSetFileNew" style="display:none" onchange="insertImageSetIntoAnswer(this,\'newA\',\'imgStatusNew\')"/>'
       + '<div class="btn-row" style="margin-top:6px"><button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgFileNew\').click()">📷 Insert image</button>'
+      + '<button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgSetFileNew\').click()">📷 Insert image set</button>'
       + '<span id="imgStatusNew" style="font-size:12px;color:var(--text3);align-self:center"></span></div></div>'
       + '<div class="field"><label class="field-label">Intranet path <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="newPath" placeholder="e.g. Fusion → HR Self-Service → …"/></div>'
       + linksEditorHtml('newLinksList')
@@ -884,7 +979,12 @@ function renderAddForm() {
       + '<div class="btn-row"><button class="btn btn-ghost" onclick="switchAdminSection(\'faqs\')">Cancel</button><button class="btn btn-primary" onclick="addFaq()">Add FAQ</button></div>';
   } else {
     body.innerHTML = '<div class="field"><label class="field-label">Title</label><input type="text" id="newTTitle" placeholder="Short, actionable title"/></div>'
-      + '<div class="field"><label class="field-label">Tip text</label><textarea id="newTText" placeholder="Be specific and practical."></textarea></div>'
+      + '<div class="field"><label class="field-label">Short teaser</label><textarea id="newTText" placeholder="Be specific and practical." rows="3"></textarea>'
+      + '<div class="field-hint">Shown in the Tips list. Keep it brief.</div></div>'
+      + '<div class="field"><label class="field-label">Full article <span style="font-weight:400;color:var(--text3)">(optional)</span></label>'
+      + formatToolbarHtml('newTBody')
+      + '<textarea id="newTBody" rows="6" placeholder="Optional — goes behind a Read more link"></textarea>'
+      + '<div class="field-hint">If filled in, a "Read more" link appears under the teaser, expanding to show this. Leave blank to keep the tip as just the teaser.</div></div>'
       + '<div class="field"><label class="field-label">Category</label><select id="newTCat">' + catOptions('general') + '</select></div>'
       + '<div class="field"><label class="field-label">Icon (emoji)</label><input type="text" id="newTIcon" placeholder="💡" style="width:70px"/></div>'
       + '<div class="err" id="addErr"></div>'
@@ -914,10 +1014,11 @@ async function addFaq() {
 async function addTip() {
   const title = document.getElementById('newTTitle').value.trim();
   const text = document.getElementById('newTText').value.trim();
+  const body = document.getElementById('newTBody').value.trim();
   const cat = document.getElementById('newTCat').value;
   const icon = document.getElementById('newTIcon').value.trim() || '💡';
-  if (!title || !text) { document.getElementById('addErr').textContent = 'Title and tip text are required.'; return; }
-  appData.tips.push({ id: Date.now(), title, text, cat, icon });
+  if (!title || !text) { document.getElementById('addErr').textContent = 'Title and teaser are required.'; return; }
+  appData.tips.push({ id: Date.now(), title, text, body, cat, icon });
   const ok = await saveAndPublish();
   adminSection = 'tips'; renderAdminPanel();
   showToast(ok ? 'Tip added and published ✓' : 'Tip saved locally only');
