@@ -57,6 +57,24 @@
     .fmt-toolbar { display: flex; gap: 4px; margin-bottom: 6px; }
     .fmt-btn { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 11px; font-size: 13px; color: var(--text); cursor: pointer; font-family: var(--font); }
     .fmt-btn:active { background: var(--surface); }
+    .img-storage-summary { font-size: 12px; color: var(--text3); margin-bottom: 12px; }
+    .img-manager-grid { display: flex; flex-direction: column; gap: 10px; }
+    .img-manager-row { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; }
+    .img-thumb-wrap { width: 56px; height: 56px; flex-shrink: 0; border-radius: 6px; background: var(--surface); overflow: hidden; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .img-thumb { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.15s; }
+    .img-thumb.loaded { opacity: 1; }
+    .img-manager-meta { flex: 1; min-width: 0; }
+    .img-manager-name { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .img-manager-size { font-size: 11px; color: var(--text3); margin: 2px 0; }
+    .img-used-badge { font-size: 11px; color: #2e7d32; font-weight: 500; }
+    .img-unused-badge { font-size: 11px; color: var(--red-dark); font-weight: 600; }
+    .img-select-cb { width: 20px; height: 20px; flex-shrink: 0; }
+    .img-select-spacer { width: 20px; flex-shrink: 0; }
+    .img-fullview-overlay { position: fixed; inset: 0; background: rgba(10,22,40,0.9); z-index: 500; display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .img-fullview-inner { position: relative; max-width: 100%; max-height: 100%; }
+    .img-fullview-img { max-width: 100%; max-height: 85vh; border-radius: 8px; display: block; }
+    .img-fullview-loading { color: #fff; font-size: 14px; }
+    .img-fullview-close { position: absolute; top: -14px; right: -14px; width: 32px; height: 32px; border-radius: 50%; background: #fff; border: none; font-size: 18px; color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .item-del:active { color: var(--red); background: var(--red-light); }
     .faq-cat { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 20px; white-space: nowrap; letter-spacing: 0.2px; flex-shrink: 0; }
     .cat-fusion { background: #e6f1fb; color: #185FA5; }
@@ -655,6 +673,14 @@ function checkPass() {
 // ADMIN — PANEL
 // ─────────────────────────────────────────────
 function renderAdminPanel() {
+  if (adminSection === 'images') {
+    document.getElementById('mainBody').innerHTML =
+      (dropboxNeedsReconnect ? reconnectBanner() : '')
+      + '<button class="btn btn-ghost" style="font-size:12px;margin-bottom:10px" onclick="switchAdminSection(\'settings\')">← Back to Settings</button>'
+      + '<div id="adminSectionBody"></div>';
+    renderAdminSection();
+    return;
+  }
   const secs = ['faqs','tips','add','categories','settings'];
   document.getElementById('mainBody').innerHTML =
     (dropboxNeedsReconnect ? reconnectBanner() : '')
@@ -746,6 +772,8 @@ function renderAdminSection() {
       + '<div class="btn-row"><button class="btn btn-primary" onclick="addCategory()">Add category</button></div>'
       + '<p style="font-size:11px;color:var(--text3);margin-top:10px">Key: lowercase, no spaces. Label: what users see.</p>';
 
+  } else if (adminSection === 'images') {
+    renderImagesSection();
   } else if (adminSection === 'settings') {
     const connected = !!getDbxToken() && !dropboxNeedsReconnect;
     const bioEnabled = !!getBiometricCredId();
@@ -774,6 +802,10 @@ function renderAdminSection() {
       + '<p style="font-size:13px;color:var(--text2);margin-bottom:10px">Download a copy of all your FAQs and tips at any time.</p>'
       + '<div class="btn-row"><button class="btn btn-primary" onclick="exportData()">Export data now</button></div></div>'
       + '<div class="pw-section">'
+      + '<div class="pw-section-title">🖼️ Image management</div>'
+      + '<p style="font-size:13px;color:var(--text2);margin-bottom:10px">See everything stored in Dropbox, spot images no longer used in any FAQ or Tip, and clear them out.</p>'
+      + '<div class="btn-row"><button class="btn btn-primary" style="width:100%" onclick="openImageManager()">Manage images</button></div></div>'
+      + '<div class="pw-section">'
       + '<div class="pw-section-title">🔑 Change admin password</div>'
       + '<div class="field"><label class="field-label">Current password</label><input type="password" id="pwCurrent" placeholder="Current password"/></div>'
       + '<div class="field"><label class="field-label">New password</label><input type="password" id="pwNew" placeholder="Min 6 characters"/></div>'
@@ -785,6 +817,10 @@ function renderAdminSection() {
 
 var editLinksList = [];
 var newLinksList = [];
+let adminImagesList = null;
+let adminImagesLoading = false;
+let adminImagesError = null;
+let selectedImagesToDelete = new Set();
 
 // ─────────────────────────────────────────────
 // ADMIN — NAMED LINKS EDITOR
@@ -827,6 +863,195 @@ function validLinks(listVarName) {
 // ─────────────────────────────────────────────
 // ADMIN — ANSWER FORMATTING TOOLBAR
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// ADMIN — IMAGE MANAGER
+// ─────────────────────────────────────────────
+function openImageManager() {
+  adminSection = 'images';
+  adminImagesList = null;
+  adminImagesError = null;
+  selectedImagesToDelete = new Set();
+  renderAdminPanel();
+  loadImagesList();
+}
+
+function findImageUsage(filename) {
+  for (const f of appData.faqs) { if (f.a && f.a.includes(filename)) return 'FAQ: ' + f.q; }
+  for (const t of appData.tips) { if (t.body && t.body.includes(filename)) return 'Tip: ' + t.title; }
+  return null;
+}
+
+async function loadImagesList() {
+  adminImagesLoading = true; adminImagesError = null;
+  if (adminSection === 'images') renderAdminSection();
+  const token = getDbxToken();
+  if (!token) {
+    adminImagesLoading = false;
+    adminImagesError = 'Connect Dropbox first (Settings tab) to manage images.';
+    if (adminSection === 'images') renderAdminSection();
+    return;
+  }
+  try {
+    let entries = [];
+    let res = await fetch('https://api.dropboxapi.com/2/files/list_folder', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/images' })
+    });
+    if (res.status === 409) {
+      // Folder doesn't exist yet — nothing has ever been uploaded
+      adminImagesList = [];
+      adminImagesLoading = false;
+      if (adminSection === 'images') renderAdminSection();
+      return;
+    }
+    if (res.status === 401) { dropboxNeedsReconnect = true; throw new Error('reconnect needed'); }
+    if (!res.ok) throw new Error('list_folder failed ' + res.status);
+    let data = await res.json();
+    entries = entries.concat(data.entries || []);
+    while (data.has_more) {
+      res = await fetch('https://api.dropboxapi.com/2/files/list_folder/continue', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cursor: data.cursor })
+      });
+      if (!res.ok) break;
+      data = await res.json();
+      entries = entries.concat(data.entries || []);
+    }
+    const files = entries.filter(e => e['.tag'] === 'file');
+    adminImagesList = files.map(e => ({
+      name: e.name,
+      path_lower: e.path_lower,
+      size: e.size,
+      usedIn: findImageUsage(e.name)
+    }));
+    adminImagesLoading = false;
+    if (adminSection === 'images') { renderAdminSection(); fetchThumbnailsForList(); }
+  } catch(e) {
+    adminImagesLoading = false;
+    if (dropboxNeedsReconnect) {
+      renderAdminPanel();
+      showToast('Dropbox disconnected — reconnect and try again');
+    } else {
+      adminImagesError = "Couldn't load images from Dropbox — try again.";
+      if (adminSection === 'images') renderAdminSection();
+    }
+  }
+}
+
+async function fetchThumbnailsForList() {
+  const token = getDbxToken();
+  if (!token || !adminImagesList) return;
+  for (const f of adminImagesList) {
+    try {
+      const res = await fetch('https://content.dropboxapi.com/2/files/get_thumbnail_v2', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Dropbox-API-Arg': JSON.stringify({ resource: { '.tag': 'path', path: f.path_lower }, format: 'jpeg', size: 'w128h128', mode: 'strict' })
+        }
+      });
+      if (!res.ok) continue;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const imgEl = document.getElementById('thumb-' + f.name);
+      if (imgEl) { imgEl.src = url; imgEl.classList.add('loaded'); }
+    } catch(e) { /* leave this one blank — not critical, list still usable */ }
+  }
+}
+
+async function viewFullImage(path) {
+  const token = getDbxToken();
+  if (!token) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'img-fullview-overlay';
+  overlay.innerHTML = '<div class="img-fullview-inner"><button class="img-fullview-close" onclick="this.closest(\'.img-fullview-overlay\').remove()">×</button><div class="img-fullview-loading">Loading…</div></div>';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  document.body.appendChild(overlay);
+  try {
+    const res = await fetch('https://content.dropboxapi.com/2/files/download', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Dropbox-API-Arg': JSON.stringify({ path }) }
+    });
+    if (!res.ok) throw new Error('download failed');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    overlay.querySelector('.img-fullview-inner').innerHTML =
+      '<button class="img-fullview-close" onclick="this.closest(\'.img-fullview-overlay\').remove()">×</button>'
+      + '<img src="' + url + '" class="img-fullview-img"/>';
+  } catch(e) {
+    const loadingEl = overlay.querySelector('.img-fullview-loading');
+    if (loadingEl) loadingEl.textContent = "Couldn't load this image.";
+  }
+}
+
+function toggleImageSelection(name, checked) {
+  if (checked) selectedImagesToDelete.add(name); else selectedImagesToDelete.delete(name);
+}
+
+async function deleteSelectedImages() {
+  if (selectedImagesToDelete.size === 0) { showToast('Select at least one image first'); return; }
+  if (!window.confirm('Delete ' + selectedImagesToDelete.size + ' image(s) from Dropbox? This can\'t be undone.')) return;
+  const token = getDbxToken();
+  if (!token) { showToast('Connect Dropbox first'); return; }
+  let failCount = 0;
+  for (const name of Array.from(selectedImagesToDelete)) {
+    const f = adminImagesList.find(x => x.name === name);
+    if (!f) continue;
+    try {
+      const res = await fetch('https://api.dropboxapi.com/2/files/delete_v2', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: f.path_lower })
+      });
+      if (res.status === 401) { dropboxNeedsReconnect = true; failCount++; continue; }
+      if (!res.ok) failCount++;
+    } catch(e) { failCount++; }
+  }
+  selectedImagesToDelete.clear();
+  showToast(failCount === 0 ? 'Deleted ✓' : (failCount + ' image(s) failed to delete'));
+  await loadImagesList();
+}
+
+function imageManagerRowHtml(f) {
+  const sizeKB = Math.round(f.size / 1024);
+  const usedBadge = f.usedIn
+    ? '<span class="img-used-badge">✓ Used in: ' + escHtml(f.usedIn) + '</span>'
+    : '<span class="img-unused-badge">⚠️ Not referenced — safe to delete</span>';
+  const checkbox = !f.usedIn ? '<input type="checkbox" class="img-select-cb" onchange="toggleImageSelection(\'' + f.name + '\', this.checked)"/>' : '<span class="img-select-spacer"></span>';
+  return '<div class="img-manager-row">'
+    + '<div class="img-thumb-wrap" onclick="viewFullImage(\'' + f.path_lower + '\')"><img class="img-thumb" id="thumb-' + f.name + '" alt=""/></div>'
+    + '<div class="img-manager-meta"><div class="img-manager-name">' + escHtml(f.name) + '</div>'
+    + '<div class="img-manager-size">' + sizeKB + ' KB</div>'
+    + usedBadge + '</div>'
+    + checkbox
+    + '</div>';
+}
+
+function renderImagesSection() {
+  const body = document.getElementById('adminSectionBody');
+  if (!body) return;
+  if (adminImagesLoading) { body.innerHTML = '<div class="edit-form-header">Manage images</div><p style="font-size:13px;color:var(--text3)">Loading images…</p>'; return; }
+  if (adminImagesError) {
+    body.innerHTML = '<div class="edit-form-header">Manage images</div><div class="err">' + escHtml(adminImagesError) + '</div>'
+      + '<div class="btn-row"><button class="btn btn-primary" onclick="loadImagesList()">Retry</button></div>';
+    return;
+  }
+  if (!adminImagesList) { body.innerHTML = '<p style="font-size:13px;color:var(--text3)">Loading images…</p>'; return; }
+  if (adminImagesList.length === 0) {
+    body.innerHTML = '<div class="edit-form-header">Manage images</div><p style="font-size:13px;color:var(--text3)">No images uploaded yet.</p>';
+    return;
+  }
+  const totalMB = (adminImagesList.reduce((sum, f) => sum + f.size, 0) / (1024 * 1024)).toFixed(1);
+  const unusedCount = adminImagesList.filter(f => !f.usedIn).length;
+  body.innerHTML = '<div class="edit-form-header">Manage images</div>'
+    + '<p class="img-storage-summary">Using ' + totalMB + 'MB of your ~2GB Dropbox allowance'
+    + (unusedCount ? ' — ' + unusedCount + ' image' + (unusedCount === 1 ? '' : 's') + ' unused' : '') + '</p>'
+    + '<div class="img-manager-grid">' + adminImagesList.map(imageManagerRowHtml).join('') + '</div>'
+    + (unusedCount ? '<div class="btn-row" style="margin-top:14px"><button class="btn btn-danger" style="width:100%" onclick="deleteSelectedImages()">Delete selected</button></div>' : '');
+}
+
 function formatToolbarHtml(textareaId) {
   return '<div class="fmt-toolbar">'
     + '<button type="button" class="fmt-btn" onclick="applyFormat(\'' + textareaId + '\',\'bold\')" title="Bold"><b>B</b></button>'
