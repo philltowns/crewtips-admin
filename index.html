@@ -77,12 +77,6 @@
     .img-fullview-close { position: absolute; top: -14px; right: -14px; width: 32px; height: 32px; border-radius: 50%; background: #fff; border: none; font-size: 18px; color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .item-del:active { color: var(--red); background: var(--red-light); }
     .faq-cat { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 20px; white-space: nowrap; letter-spacing: 0.2px; flex-shrink: 0; }
-    .cat-fusion { background: #e6f1fb; color: #185FA5; }
-    .cat-roster { background: #eaf3de; color: #3B6D11; }
-    .cat-pay { background: #faeeda; color: #854F0B; }
-    .cat-medical { background: #FAECE7; color: #993C1D; }
-    .cat-it { background: #eeedfe; color: #3C3489; }
-    .cat-general { background: #f0ede5; color: #5F5E5A; }
     .pw-section { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 12px; }
     .pw-section-title { font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 10px; }
     .cat-filter-bar { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -546,6 +540,22 @@ function escHtml(s) {
 }
 function catName(key) { return (appData.categories && appData.categories[key]) || key; }
 
+function categoryColorInfo(cat) {
+  const known = {
+    fusion:  { bg: '#e6f1fb', text: '#185FA5' },
+    roster:  { bg: '#eaf3de', text: '#3B6D11' },
+    pay:     { bg: '#faeeda', text: '#854F0B' },
+    medical: { bg: '#FAECE7', text: '#993C1D' },
+    it:      { bg: '#eeedfe', text: '#3C3489' },
+    general: { bg: '#f0ede5', text: '#5F5E5A' }
+  };
+  if (known[cat]) return known[cat];
+  let hash = 0;
+  for (let i = 0; i < cat.length; i++) hash = (hash * 31 + cat.charCodeAt(i)) >>> 0;
+  const hue = hash % 360;
+  return { bg: 'hsl(' + hue + ',65%,92%)', text: 'hsl(' + hue + ',55%,32%)' };
+}
+
 // ─────────────────────────────────────────────
 // BIOMETRIC UNLOCK (WebAuthn, device-local only)
 //
@@ -733,7 +743,7 @@ function renderAdminSection() {
       + '<div class="item-list">'
       + (filtered.length === 0 ? '<div class="item-list-empty">' + (adminSearchTerm ? 'No FAQs match your search.' : 'No FAQs here yet.') + '</div>'
         : filtered.map(f => '<div class="item-row"><span class="item-row-text">' + escHtml(f.q) + '</span>'
-          + '<span class="faq-cat cat-' + f.cat + '">' + escHtml(catName(f.cat)) + '</span>'
+          + '<span class="faq-cat" style="background:' + categoryColorInfo(f.cat).bg + ';color:' + categoryColorInfo(f.cat).text + '">' + escHtml(catName(f.cat)) + '</span>'
           + '<button class="item-edit" onclick="editingFaqId=' + f.id + ';renderAdminSection()">✏️</button>'
           + '<button class="item-del" onclick="deleteFaq(' + f.id + ')">×</button></div>').join(''))
       + '</div><p style="font-size:12px;color:var(--text3)">Use \'Add new\' to create a FAQ.</p>';
@@ -829,7 +839,7 @@ function linkRowsHtml(listVarName) {
   return window[listVarName].map((l, i) =>
     '<div class="link-row" style="display:flex;gap:6px;margin-bottom:6px">'
     + '<input type="text" placeholder="Label (e.g. Staff Travel info)" value="' + escHtml(l.label) + '" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:13px;font-family:var(--font)" oninput="updateLinkField(\'' + listVarName + '\',' + i + ',\'label\',this.value)"/>'
-    + '<input type="text" placeholder="URL" value="' + escHtml(l.url) + '" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:13px;font-family:var(--font)" oninput="updateLinkField(\'' + listVarName + '\',' + i + ',\'url\',this.value)"/>'
+    + '<input type="text" placeholder="URL" value="' + escHtml(l.url) + '" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:13px;font-family:var(--font)" oninput="updateLinkField(\'' + listVarName + '\',' + i + ',\'url\',this.value)"/>'
     + '<button type="button" class="item-del" onclick="removeLinkRow(\'' + listVarName + '\',' + i + ')">×</button>'
     + '</div>'
   ).join('');
@@ -839,7 +849,7 @@ function linksEditorHtml(listVarName) {
   return '<div class="field"><label class="field-label">Links <span style="font-weight:400;color:var(--text3)">(optional)</span></label>'
     + '<div id="' + listVarName + 'Rows">' + linkRowsHtml(listVarName) + '</div>'
     + '<button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="addLinkRow(\'' + listVarName + '\')">+ Add link</button>'
-    + '<div class="field-hint">Give each link a short label instead of showing the full URL.</div></div>';
+    + '<div class="field-hint">Give each link a short label instead of showing the full URL. No need to type https:// — it\'s added automatically.</div></div>';
 }
 
 function updateLinkField(listVarName, idx, field, value) { window[listVarName][idx][field] = value; }
@@ -854,9 +864,15 @@ function removeLinkRow(listVarName, idx) {
   document.getElementById(listVarName + 'Rows').innerHTML = linkRowsHtml(listVarName);
 }
 
+function normalizeUrl(url) {
+  url = url.trim();
+  if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+  return url;
+}
+
 function validLinks(listVarName) {
   return window[listVarName]
-    .map(l => ({ label: l.label.trim(), url: l.url.trim() }))
+    .map(l => ({ label: l.label.trim(), url: normalizeUrl(l.url) }))
     .filter(l => l.label && l.url);
 }
 
