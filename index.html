@@ -174,6 +174,7 @@ function matchesTipSearch(t, term) {
 }
 let editingFaqId = null;
 let editingTipId = null;
+let editingLinkId = null;
 let dropboxNeedsReconnect = false;
 
 // ─────────────────────────────────────────────
@@ -691,12 +692,12 @@ function renderAdminPanel() {
     renderAdminSection();
     return;
   }
-  const secs = ['faqs','tips','add','categories','settings'];
+  const secs = ['faqs','tips','links','add','categories','settings'];
   document.getElementById('mainBody').innerHTML =
     (dropboxNeedsReconnect ? reconnectBanner() : '')
     + '<div class="admin-tabs">'
     + secs.map(s => '<button class="admin-tab ' + (adminSection===s?'active':'') + '" onclick="switchAdminSection(\'' + s + '\')">'
-      + {faqs:'FAQs',tips:'Tips',add:'Add new',categories:'Categories',settings:'Settings'}[s] + '</button>').join('')
+      + {faqs:'FAQs',tips:'Tips',links:'Links',add:'Add new',categories:'Categories',settings:'Settings'}[s] + '</button>').join('')
     + '</div><div id="adminSectionBody"></div>'
     + '<div class="signout-row">'
     + '<button class="btn btn-ghost" style="font-size:12px" onclick="adminAuthed=false;renderLogin(\'\')">Sign out</button></div>';
@@ -709,7 +710,7 @@ function reconnectBanner() {
     + '<button class="reconnect-banner-btn" onclick="connectDropbox()">Reconnect</button></div>';
 }
 
-function switchAdminSection(sec) { adminSection = sec; editingFaqId = null; editingTipId = null; adminSearchTerm = ''; renderAdminPanel(); }
+function switchAdminSection(sec) { adminSection = sec; editingFaqId = null; editingTipId = null; editingLinkId = null; adminSearchTerm = ''; renderAdminPanel(); }
 
 // ─────────────────────────────────────────────
 // ADMIN — CATEGORY FILTER
@@ -735,6 +736,7 @@ function renderAdminSection() {
 
   if (editingFaqId !== null) { const f = appData.faqs.find(x => x.id === editingFaqId); if(f) { body.innerHTML = faqEditForm(f); return; } editingFaqId = null; }
   if (editingTipId !== null) { const t = appData.tips.find(x => x.id === editingTipId); if(t) { body.innerHTML = tipEditForm(t); return; } editingTipId = null; }
+  if (editingLinkId !== null) { const l = (appData.quickLinks||[]).find(x => x.id === editingLinkId); if(l) { body.innerHTML = quickLinkEditForm(l); return; } editingLinkId = null; }
 
   if (adminSection === 'faqs') {
     const filtered = (adminCatFilter === 'all' ? appData.faqs : appData.faqs.filter(f => f.cat === adminCatFilter))
@@ -760,9 +762,18 @@ function renderAdminSection() {
           + '<button class="item-del" onclick="deleteTip(' + t.id + ')">×</button></div>').join(''))
       + '</div><p style="font-size:12px;color:var(--text3)">Use \'Add new\' to create a tip.</p>';
 
+  } else if (adminSection === 'links') {
+    const links = appData.quickLinks || [];
+    body.innerHTML = '<div class="item-list">'
+      + (links.length === 0 ? '<div class="item-list-empty">No quick links yet.</div>'
+        : links.map(l => '<div class="item-row"><span class="item-row-text">' + escHtml(l.title) + '</span>'
+          + '<button class="item-edit" onclick="editingLinkId=' + l.id + ';renderAdminSection()">✏️</button>'
+          + '<button class="item-del" onclick="deleteQuickLink(' + l.id + ')">×</button></div>').join(''))
+      + '</div><p style="font-size:12px;color:var(--text3)">Use \'Add new\' to create a quick link. Shown in the pilot app\'s Tools tab.</p>';
+
   } else if (adminSection === 'add') {
     body.innerHTML = '<div class="field"><label class="field-label">What are you adding?</label>'
-      + '<select id="addType" onchange="renderAddForm()"><option value="faq">FAQ</option><option value="tip">Top tip</option></select></div>'
+      + '<select id="addType" onchange="renderAddForm()"><option value="faq">FAQ</option><option value="tip">Top tip</option><option value="link">Quick link</option></select></div>'
       + '<div id="addFormBody"></div>';
     renderAddForm();
 
@@ -1194,6 +1205,31 @@ async function saveTipEdit(id) {
 }
 
 // ─────────────────────────────────────────────
+// ADMIN — QUICK LINK EDIT FORM
+// ─────────────────────────────────────────────
+function quickLinkEditForm(l) {
+  return '<div class="edit-form-header">Editing quick link</div>'
+    + '<div class="field"><label class="field-label">Title</label><input type="text" id="editQlTitle" value="' + escHtml(l.title) + '"/></div>'
+    + '<div class="field"><label class="field-label">Description <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="editQlDesc" value="' + escHtml(l.description||'') + '"/></div>'
+    + '<div class="field"><label class="field-label">URL</label><input type="url" id="editQlUrl" value="' + escHtml(l.url) + '" placeholder="https://…"/></div>'
+    + '<div class="err" id="editQlErr"></div>'
+    + '<div class="btn-row"><button class="btn btn-ghost" onclick="editingLinkId=null;renderAdminSection()">Cancel</button>'
+    + '<button class="btn btn-primary" onclick="saveQuickLinkEdit(' + l.id + ')">Save changes</button></div>';
+}
+
+async function saveQuickLinkEdit(id) {
+  const title = document.getElementById('editQlTitle').value.trim();
+  const description = document.getElementById('editQlDesc').value.trim();
+  const url = document.getElementById('editQlUrl').value.trim();
+  if (!title || !url) { document.getElementById('editQlErr').textContent = 'Title and URL are required.'; return; }
+  const idx = (appData.quickLinks||[]).findIndex(l => l.id === id);
+  if (idx > -1) appData.quickLinks[idx] = { ...appData.quickLinks[idx], title, description, url };
+  const ok = await saveAndPublish();
+  editingLinkId = null; adminSection = 'links'; renderAdminPanel();
+  showToast(ok ? 'Quick link updated and published ✓' : 'Quick link saved locally only');
+}
+
+// ─────────────────────────────────────────────
 // ADMIN — ADD FORM
 // ─────────────────────────────────────────────
 function renderAddForm() {
@@ -1218,7 +1254,7 @@ function renderAddForm() {
       + '<div class="field"><label class="field-label">See also tip <span style="font-weight:400;color:var(--text3)">(optional)</span></label><select id="newSeeAlso">' + tipOptions + '</select></div>'
       + '<div class="err" id="addErr"></div>'
       + '<div class="btn-row"><button class="btn btn-ghost" onclick="switchAdminSection(\'faqs\')">Cancel</button><button class="btn btn-primary" onclick="addFaq()">Add FAQ</button></div>';
-  } else {
+  } else if (type === 'tip') {
     body.innerHTML = '<div class="field"><label class="field-label">Title</label><input type="text" id="newTTitle" placeholder="Short, actionable title"/></div>'
       + '<div class="field"><label class="field-label">Short teaser</label><textarea id="newTText" placeholder="Be specific and practical." rows="3"></textarea>'
       + '<div class="field-hint">Shown in the Tips list. Keep it brief.</div></div>'
@@ -1230,6 +1266,12 @@ function renderAddForm() {
       + '<div class="field"><label class="field-label">Icon (emoji)</label><input type="text" id="newTIcon" placeholder="💡" style="width:70px"/></div>'
       + '<div class="err" id="addErr"></div>'
       + '<div class="btn-row"><button class="btn btn-ghost" onclick="switchAdminSection(\'tips\')">Cancel</button><button class="btn btn-primary" onclick="addTip()">Add tip</button></div>';
+  } else {
+    body.innerHTML = '<div class="field"><label class="field-label">Title</label><input type="text" id="newQlTitle" placeholder="e.g. Staff Travel"/></div>'
+      + '<div class="field"><label class="field-label">Description <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="newQlDesc" placeholder="Shown under the title, if provided"/></div>'
+      + '<div class="field"><label class="field-label">URL</label><input type="url" id="newQlUrl" placeholder="https://…"/></div>'
+      + '<div class="err" id="addErr"></div>'
+      + '<div class="btn-row"><button class="btn btn-ghost" onclick="switchAdminSection(\'links\')">Cancel</button><button class="btn btn-primary" onclick="addQuickLink()">Add link</button></div>';
   }
 }
 
@@ -1265,6 +1307,18 @@ async function addTip() {
   showToast(ok ? 'Tip added and published ✓' : 'Tip saved locally only');
 }
 
+async function addQuickLink() {
+  const title = document.getElementById('newQlTitle').value.trim();
+  const description = document.getElementById('newQlDesc').value.trim();
+  const url = document.getElementById('newQlUrl').value.trim();
+  if (!title || !url) { document.getElementById('addErr').textContent = 'Title and URL are required.'; return; }
+  appData.quickLinks = appData.quickLinks || [];
+  appData.quickLinks.push({ id: Date.now(), title, description, url });
+  const ok = await saveAndPublish();
+  adminSection = 'links'; renderAdminPanel();
+  showToast(ok ? 'Quick link added and published ✓' : 'Quick link saved locally only');
+}
+
 async function deleteFaq(id) {
   if (!confirm('Delete this FAQ?')) return;
   appData.faqs = appData.faqs.filter(f => f.id !== id);
@@ -1279,6 +1333,14 @@ async function deleteTip(id) {
   const ok = await saveAndPublish();
   renderAdminPanel();
   showToast(ok ? 'Tip deleted and published ✓' : 'Tip deleted locally only');
+}
+
+async function deleteQuickLink(id) {
+  if (!confirm('Delete this quick link?')) return;
+  appData.quickLinks = (appData.quickLinks || []).filter(l => l.id !== id);
+  const ok = await saveAndPublish();
+  renderAdminPanel();
+  showToast(ok ? 'Quick link deleted and published ✓' : 'Quick link deleted locally only');
 }
 
 // ─────────────────────────────────────────────
@@ -1370,7 +1432,7 @@ function showToast(msg) {
 // DEFAULT DATA
 // ─────────────────────────────────────────────
 function getDefaultData() {
-  return { version:'1.0.0', categories:{ fusion:'Fusion', roster:'Roster', pay:'Pay & expenses', medical:'Medical', it:'IT & systems', general:'General' }, faqs:[], tips:[] };
+  return { version:'1.0.0', categories:{ fusion:'Fusion', roster:'Roster', pay:'Pay & expenses', medical:'Medical', it:'IT & systems', general:'General' }, faqs:[], tips:[], quickLinks:[] };
 }
 
 init();
