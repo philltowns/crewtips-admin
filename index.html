@@ -650,18 +650,38 @@ function renderApp() {
 function getPass() { return localStorage.getItem(PASS_KEY) || ''; }
 
 function renderLogin(errMsg) {
+  const stored = getPass();
+  const dbxConnected = !!getDbxToken();
+
+  if (!stored && !dbxConnected) {
+    // First-ever setup on this device, but Dropbox hasn't been connected
+    // yet — don't offer a password field at all. Without this, whoever
+    // opened the app first on any device could type anything and claim
+    // the admin password. Requiring a genuine Dropbox login first ties
+    // "who can become admin" to "who already has real Dropbox access",
+    // since that login screen is Dropbox's own and can't be bypassed by
+    // reading this app's source.
+    document.getElementById('mainBody').innerHTML = '<div class="login-wrap">'
+      + '<div class="login-logo">CT</div><h3>CrewTips Admin</h3>'
+      + '<p>First-time setup on this device. Connect the real Dropbox account to continue — the admin password can only be created once Dropbox is connected.</p>'
+      + '<div class="err" id="loginErr">' + errMsg + '</div>'
+      + '<button class="dropbox-connect" onclick="connectDropbox()">Connect Dropbox</button>'
+      + '</div>';
+    return;
+  }
+
   const hasBiometric = webauthnPlatformAvailable && !!getBiometricCredId();
   document.getElementById('mainBody').innerHTML = '<div class="login-wrap">'
     + '<div class="login-logo">CT</div><h3>CrewTips Admin</h3>'
-    + '<p>' + (hasBiometric ? 'Use Face ID / fingerprint, or enter your password.' : 'Enter the admin password to manage content.') + '</p>'
+    + '<p>' + (hasBiometric ? 'Use Face ID / fingerprint, or enter your password.' : (stored ? 'Enter the admin password to manage content.' : 'Dropbox is connected — choose an admin password to finish setup.')) + '</p>'
     + '<div class="err" id="loginErr">' + errMsg + '</div>'
     + (hasBiometric
       ? '<div class="btn-row" style="margin-bottom:14px"><button class="btn btn-primary" style="width:100%" onclick="authenticateWithBiometric(false)">👆 Unlock with Face ID / Fingerprint</button></div>'
         + '<div style="text-align:center;font-size:11px;color:var(--text3);margin-bottom:14px">— or use your password —</div>'
       : '')
     + '<div class="field"><label class="field-label">Password</label>'
-    + '<input type="password" id="pwInput" placeholder="Enter password" onkeydown="if(event.key===\'Enter\')checkPass()"/></div>'
-    + '<div class="btn-row"><button class="btn btn-primary" style="width:100%" onclick="checkPass()">Sign in</button></div></div>';
+    + '<input type="password" id="pwInput" placeholder="' + (stored ? 'Enter password' : 'Choose a password') + '" onkeydown="if(event.key===\'Enter\')checkPass()"/></div>'
+    + '<div class="btn-row"><button class="btn btn-primary" style="width:100%" onclick="checkPass()">' + (stored ? 'Sign in' : 'Set password') + '</button></div></div>';
 
   if (hasBiometric) {
     // Auto-prompt immediately so opening the app is a single glance/touch —
@@ -673,11 +693,26 @@ function renderLogin(errMsg) {
 }
 
 function checkPass() {
-  const v = document.getElementById('pwInput').value;
+  const el = document.getElementById('pwInput');
+  const v = el ? el.value : '';
   const stored = getPass();
-  if (stored && v === stored) { adminAuthed = true; adminSection = 'faqs'; adminCatFilter = 'all'; renderAdminPanel(); }
-  else if (!stored && v) { localStorage.setItem(PASS_KEY, v); adminAuthed = true; adminSection = 'faqs'; adminCatFilter = 'all'; renderAdminPanel(); showToast('Password set ✓'); }
-  else document.getElementById('loginErr').textContent = 'Incorrect password. Try again.';
+  if (stored) {
+    if (v === stored) { adminAuthed = true; adminSection = 'faqs'; adminCatFilter = 'all'; renderAdminPanel(); }
+    else document.getElementById('loginErr').textContent = 'Incorrect password. Try again.';
+    return;
+  }
+  // No password set yet on this device — defensive check mirroring the
+  // UI gate above, in case this is ever reached without it (e.g. a stale
+  // cached page). Refuse to set a password unless Dropbox is genuinely
+  // connected first.
+  if (!getDbxToken()) {
+    renderLogin('Connect Dropbox first to set up the admin password.');
+    return;
+  }
+  if (!v) { document.getElementById('loginErr').textContent = 'Enter a password.'; return; }
+  localStorage.setItem(PASS_KEY, v);
+  adminAuthed = true; adminSection = 'faqs'; adminCatFilter = 'all'; renderAdminPanel();
+  showToast('Password set ✓');
 }
 
 // ─────────────────────────────────────────────
