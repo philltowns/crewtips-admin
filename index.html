@@ -1248,7 +1248,7 @@ function quickLinkEditForm(l) {
   return '<div class="edit-form-header">Editing quick link</div>'
     + '<div class="field"><label class="field-label">Title</label><input type="text" id="editQlTitle" value="' + escHtml(l.title) + '"/></div>'
     + '<div class="field"><label class="field-label">Description <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="editQlDesc" value="' + escHtml(l.description||'') + '"/></div>'
-    + '<div class="field"><label class="field-label">URL</label><input type="text" id="editQlUrl" value="' + escHtml(l.url) + '" placeholder="e.g. vsflightops.com"/><div class="field-hint">https:// is added automatically if you leave it off.</div></div>'
+    + '<div class="field"><label class="field-label">URL</label><input type="text" id="editQlUrl" autocapitalize="off" autocorrect="off" spellcheck="false" value="' + escHtml(l.url) + '" placeholder="e.g. vsflightops.com"/><div class="field-hint">https:// is added automatically if you leave it off.</div></div>'
     + '<div class="err" id="editQlErr"></div>'
     + '<div class="btn-row"><button class="btn btn-ghost" onclick="editingLinkId=null;renderAdminSection()">Cancel</button>'
     + '<button class="btn btn-primary" onclick="saveQuickLinkEdit(' + l.id + ')">Save changes</button></div>';
@@ -1306,7 +1306,7 @@ function renderAddForm() {
   } else {
     body.innerHTML = '<div class="field"><label class="field-label">Title</label><input type="text" id="newQlTitle" placeholder="e.g. Staff Travel"/></div>'
       + '<div class="field"><label class="field-label">Description <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="newQlDesc" placeholder="Shown under the title, if provided"/></div>'
-      + '<div class="field"><label class="field-label">URL</label><input type="text" id="newQlUrl" placeholder="e.g. vsflightops.com"/><div class="field-hint">https:// is added automatically if you leave it off.</div></div>'
+      + '<div class="field"><label class="field-label">URL</label><input type="text" id="newQlUrl" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="e.g. vsflightops.com"/><div class="field-hint">https:// is added automatically if you leave it off.</div></div>'
       + '<div class="err" id="addErr"></div>'
       + '<div class="btn-row"><button class="btn btn-ghost" onclick="switchAdminSection(\'links\')">Cancel</button><button class="btn btn-primary" onclick="addQuickLink()">Add link</button></div>';
   }
