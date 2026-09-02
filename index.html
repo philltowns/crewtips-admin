@@ -1207,11 +1207,13 @@ async function saveTipEdit(id) {
 // ─────────────────────────────────────────────
 // ADMIN — QUICK LINK EDIT FORM
 // ─────────────────────────────────────────────
+// Reuses the same normalizeUrl() already defined above for FAQ related
+// links, so both behave identically — no need to type https://.
 function quickLinkEditForm(l) {
   return '<div class="edit-form-header">Editing quick link</div>'
     + '<div class="field"><label class="field-label">Title</label><input type="text" id="editQlTitle" value="' + escHtml(l.title) + '"/></div>'
     + '<div class="field"><label class="field-label">Description <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="editQlDesc" value="' + escHtml(l.description||'') + '"/></div>'
-    + '<div class="field"><label class="field-label">URL</label><input type="url" id="editQlUrl" value="' + escHtml(l.url) + '" placeholder="https://…"/></div>'
+    + '<div class="field"><label class="field-label">URL</label><input type="text" id="editQlUrl" value="' + escHtml(l.url) + '" placeholder="e.g. vsflightops.com"/><div class="field-hint">https:// is added automatically if you leave it off.</div></div>'
     + '<div class="err" id="editQlErr"></div>'
     + '<div class="btn-row"><button class="btn btn-ghost" onclick="editingLinkId=null;renderAdminSection()">Cancel</button>'
     + '<button class="btn btn-primary" onclick="saveQuickLinkEdit(' + l.id + ')">Save changes</button></div>';
@@ -1220,7 +1222,7 @@ function quickLinkEditForm(l) {
 async function saveQuickLinkEdit(id) {
   const title = document.getElementById('editQlTitle').value.trim();
   const description = document.getElementById('editQlDesc').value.trim();
-  const url = document.getElementById('editQlUrl').value.trim();
+  const url = normalizeUrl(document.getElementById('editQlUrl').value);
   if (!title || !url) { document.getElementById('editQlErr').textContent = 'Title and URL are required.'; return; }
   const idx = (appData.quickLinks||[]).findIndex(l => l.id === id);
   if (idx > -1) appData.quickLinks[idx] = { ...appData.quickLinks[idx], title, description, url };
@@ -1269,7 +1271,7 @@ function renderAddForm() {
   } else {
     body.innerHTML = '<div class="field"><label class="field-label">Title</label><input type="text" id="newQlTitle" placeholder="e.g. Staff Travel"/></div>'
       + '<div class="field"><label class="field-label">Description <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="newQlDesc" placeholder="Shown under the title, if provided"/></div>'
-      + '<div class="field"><label class="field-label">URL</label><input type="url" id="newQlUrl" placeholder="https://…"/></div>'
+      + '<div class="field"><label class="field-label">URL</label><input type="text" id="newQlUrl" placeholder="e.g. vsflightops.com"/><div class="field-hint">https:// is added automatically if you leave it off.</div></div>'
       + '<div class="err" id="addErr"></div>'
       + '<div class="btn-row"><button class="btn btn-ghost" onclick="switchAdminSection(\'links\')">Cancel</button><button class="btn btn-primary" onclick="addQuickLink()">Add link</button></div>';
   }
@@ -1310,7 +1312,7 @@ async function addTip() {
 async function addQuickLink() {
   const title = document.getElementById('newQlTitle').value.trim();
   const description = document.getElementById('newQlDesc').value.trim();
-  const url = document.getElementById('newQlUrl').value.trim();
+  const url = normalizeUrl(document.getElementById('newQlUrl').value);
   if (!title || !url) { document.getElementById('addErr').textContent = 'Title and URL are required.'; return; }
   appData.quickLinks = appData.quickLinks || [];
   appData.quickLinks.push({ id: Date.now(), title, description, url });
