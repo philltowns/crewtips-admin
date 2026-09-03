@@ -801,7 +801,7 @@ function renderAdminSection() {
     const links = appData.quickLinks || [];
     body.innerHTML = '<div class="item-list">'
       + (links.length === 0 ? '<div class="item-list-empty">No quick links yet.</div>'
-        : links.map(l => '<div class="item-row"><span class="item-row-text">' + escHtml(l.title) + '</span>'
+        : links.map(l => '<div class="item-row"><span class="item-row-text">' + escHtml(l.title) + (l.openExternal ? ' <span style="font-size:11px;color:var(--text3)">↗ external</span>' : '') + '</span>'
           + '<button class="item-edit" onclick="editingLinkId=' + l.id + ';renderAdminSection()">✏️</button>'
           + '<button class="item-del" onclick="deleteQuickLink(' + l.id + ')">×</button></div>').join(''))
       + '</div><p style="font-size:12px;color:var(--text3)">Use \'Add new\' to create a quick link. Shown in the pilot app\'s Tools tab.</p>';
@@ -1249,6 +1249,7 @@ function quickLinkEditForm(l) {
     + '<div class="field"><label class="field-label">Title</label><input type="text" id="editQlTitle" value="' + escHtml(l.title) + '"/></div>'
     + '<div class="field"><label class="field-label">Description <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="editQlDesc" value="' + escHtml(l.description||'') + '"/></div>'
     + '<div class="field"><label class="field-label">URL</label><input type="text" id="editQlUrl" autocapitalize="off" autocorrect="off" spellcheck="false" value="' + escHtml(l.url) + '" placeholder="e.g. vsflightops.com"/><div class="field-hint">https:// is added automatically if you leave it off.</div></div>'
+    + '<div class="field"><label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer"><input type="checkbox" id="editQlExternal" ' + (l.openExternal ? 'checked' : '') + ' style="margin-top:3px"/><span><span class="field-label" style="margin-bottom:2px;display:block">Open straight in an external browser (Android)</span><span style="font-size:12px;color:var(--text3)">For sites like Fusion, where SSO logins break inside the in-app view. Leave unticked for ordinary links.</span></span></label></div>'
     + '<div class="err" id="editQlErr"></div>'
     + '<div class="btn-row"><button class="btn btn-ghost" onclick="editingLinkId=null;renderAdminSection()">Cancel</button>'
     + '<button class="btn btn-primary" onclick="saveQuickLinkEdit(' + l.id + ')">Save changes</button></div>';
@@ -1258,9 +1259,10 @@ async function saveQuickLinkEdit(id) {
   const title = document.getElementById('editQlTitle').value.trim();
   const description = document.getElementById('editQlDesc').value.trim();
   const url = normalizeUrl(document.getElementById('editQlUrl').value);
+  const openExternal = document.getElementById('editQlExternal').checked;
   if (!title || !url) { document.getElementById('editQlErr').textContent = 'Title and URL are required.'; return; }
   const idx = (appData.quickLinks||[]).findIndex(l => l.id === id);
-  if (idx > -1) appData.quickLinks[idx] = { ...appData.quickLinks[idx], title, description, url };
+  if (idx > -1) appData.quickLinks[idx] = { ...appData.quickLinks[idx], title, description, url, openExternal };
   const ok = await saveAndPublish();
   editingLinkId = null; adminSection = 'links'; renderAdminPanel();
   showToast(ok ? 'Quick link updated and published ✓' : 'Quick link saved locally only');
@@ -1307,6 +1309,7 @@ function renderAddForm() {
     body.innerHTML = '<div class="field"><label class="field-label">Title</label><input type="text" id="newQlTitle" placeholder="e.g. Staff Travel"/></div>'
       + '<div class="field"><label class="field-label">Description <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="newQlDesc" placeholder="Shown under the title, if provided"/></div>'
       + '<div class="field"><label class="field-label">URL</label><input type="text" id="newQlUrl" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="e.g. vsflightops.com"/><div class="field-hint">https:// is added automatically if you leave it off.</div></div>'
+      + '<div class="field"><label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer"><input type="checkbox" id="newQlExternal" style="margin-top:3px"/><span><span class="field-label" style="margin-bottom:2px;display:block">Open straight in an external browser (Android)</span><span style="font-size:12px;color:var(--text3)">For sites like Fusion, where SSO logins break inside the in-app view. Leave unticked for ordinary links.</span></span></label></div>'
       + '<div class="err" id="addErr"></div>'
       + '<div class="btn-row"><button class="btn btn-ghost" onclick="switchAdminSection(\'links\')">Cancel</button><button class="btn btn-primary" onclick="addQuickLink()">Add link</button></div>';
   }
@@ -1348,9 +1351,10 @@ async function addQuickLink() {
   const title = document.getElementById('newQlTitle').value.trim();
   const description = document.getElementById('newQlDesc').value.trim();
   const url = normalizeUrl(document.getElementById('newQlUrl').value);
+  const openExternal = document.getElementById('newQlExternal').checked;
   if (!title || !url) { document.getElementById('addErr').textContent = 'Title and URL are required.'; return; }
   appData.quickLinks = appData.quickLinks || [];
-  appData.quickLinks.push({ id: Date.now(), title, description, url });
+  appData.quickLinks.push({ id: Date.now(), title, description, url, openExternal });
   const ok = await saveAndPublish();
   adminSection = 'links'; renderAdminPanel();
   showToast(ok ? 'Quick link added and published ✓' : 'Quick link saved locally only');
