@@ -384,6 +384,7 @@ async function insertImageIntoAnswer(fileInputEl, textareaId, statusElId) {
     const tag = caption ? '[img:' + directUrl + '|' + caption + ']' : '[img:' + directUrl + ']';
     const ta = document.getElementById(textareaId);
     ta.value = ta.value + (ta.value === '' || ta.value.endsWith('\n') ? '' : '\n') + tag + '\n';
+    renderImageManager(textareaId, textareaId === 'editA' ? 'imgManagerEdit' : 'imgManagerNew');
     statusEl.textContent = '';
     showToast('Image uploaded and inserted ✓');
   } catch(e) {
@@ -437,6 +438,7 @@ async function insertImageSetIntoAnswer(fileInputEl, textareaId, statusElId) {
     lines.push('[/imgset]');
     const ta = document.getElementById(textareaId);
     ta.value = ta.value + (ta.value === '' || ta.value.endsWith('\n') ? '' : '\n') + lines.join('\n') + '\n';
+    renderImageManager(textareaId, textareaId === 'editA' ? 'imgManagerEdit' : 'imgManagerNew');
     statusEl.textContent = '';
     showToast('Image set uploaded and inserted ✓');
   } catch(e) {
@@ -770,7 +772,7 @@ function renderAdminSection() {
   const body = document.getElementById('adminSectionBody');
   if (!body) return;
 
-  if (editingFaqId !== null) { const f = appData.faqs.find(x => x.id === editingFaqId); if(f) { body.innerHTML = faqEditForm(f); return; } editingFaqId = null; }
+  if (editingFaqId !== null) { const f = appData.faqs.find(x => x.id === editingFaqId); if(f) { body.innerHTML = faqEditForm(f); renderImageManager('editA', 'imgManagerEdit'); return; } editingFaqId = null; }
   if (editingTipId !== null) { const t = appData.tips.find(x => x.id === editingTipId); if(t) { body.innerHTML = tipEditForm(t); return; } editingTipId = null; }
   if (editingLinkId !== null) { const l = (appData.quickLinks||[]).find(x => x.id === editingLinkId); if(l) { body.innerHTML = quickLinkEditForm(l); return; } editingLinkId = null; }
 
@@ -1115,6 +1117,141 @@ function renderImagesSection() {
     + (unusedCount ? '<div class="btn-row" style="margin-top:14px"><button class="btn btn-danger" style="width:100%" onclick="deleteSelectedImages()">Delete selected</button></div>' : '');
 }
 
+// ─────────────────────────────────────────────
+// ADMIN — IMAGE TAG MANAGER (edit captions/delete without hand-editing raw tags)
+// ─────────────────────────────────────────────
+// Scans a textarea's raw [img:...] / [imgset:...] tags into a structured
+// list so captions can be edited and images removed without hunting
+// through the answer text by hand. Every edit rewrites the textarea's
+// value directly and re-parses from scratch — the textarea itself stays
+// the single source of truth, exactly as it already was for the insert
+// buttons above it; nothing here is saved until "Save changes" is
+// pressed, same as any other edit to the answer field.
+function parseImageBlocks(text) {
+  const lines = text.split('\n');
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    const setMatch = lines[i].trim().match(/^\[imgset:(.*)\]$/);
+    if (setMatch) {
+      const startLine = i;
+      const title = setMatch[1].trim();
+      const items = [];
+      i++;
+      while (i < lines.length && lines[i].trim() !== '[/imgset]') {
+        const imgMatch = lines[i].trim().match(/^\[img:([^|\]]+)(?:\|([^\]]+))?\]$/);
+        if (imgMatch) items.push({ url: imgMatch[1].trim(), caption: imgMatch[2] ? imgMatch[2].trim() : '', line: i });
+        i++;
+      }
+      const endLine = i; // index of the [/imgset] line (or end of text if unterminated)
+      blocks.push({ type: 'imgset', title, items, startLine, endLine });
+      i++;
+      continue;
+    }
+    const imgMatch = lines[i].trim().match(/^\[img:([^|\]]+)(?:\|([^\]]+))?\]$/);
+    if (imgMatch) blocks.push({ type: 'image', url: imgMatch[1].trim(), caption: imgMatch[2] ? imgMatch[2].trim() : '', line: i });
+    i++;
+  }
+  return blocks;
+}
+
+function imageRowHtml(textareaId, containerId, url, caption, line) {
+  return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border)">'
+    + '<img src="' + escHtml(url) + '" style="width:36px;height:36px;object-fit:cover;border-radius:6px;flex-shrink:0;background:var(--border)" onerror="this.style.visibility=\'hidden\'"/>'
+    + '<span style="flex:1;font-size:12px;color:' + (caption ? 'var(--text)' : 'var(--text3)') + '">' + (caption ? escHtml(caption) : 'No caption') + '</span>'
+    + '<button type="button" class="item-edit" style="font-size:11px" onclick="editImageCaption(\'' + textareaId + '\',\'' + containerId + '\',' + line + ')" title="Edit caption">✏️</button>'
+    + '<button type="button" class="item-del" style="font-size:11px" onclick="deleteImageLine(\'' + textareaId + '\',\'' + containerId + '\',' + line + ')" title="Remove image">×</button>'
+    + '</div>';
+}
+
+function renderImageManager(textareaId, containerId) {
+  const ta = document.getElementById(textareaId);
+  const container = document.getElementById(containerId);
+  if (!ta || !container) return;
+  const blocks = parseImageBlocks(ta.value);
+  const countEl = document.getElementById(containerId + 'Count');
+  const totalImages = blocks.reduce((n, b) => n + (b.type === 'imgset' ? b.items.length : 1), 0);
+  if (countEl) countEl.textContent = totalImages ? ' (' + totalImages + ')' : '';
+  if (!blocks.length) { container.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:4px 0">No images in this answer yet — use the buttons above to add some.</div>'; return; }
+  container.innerHTML = blocks.map(b => {
+    if (b.type === 'image') return imageRowHtml(textareaId, containerId, b.url, b.caption, b.line);
+    const itemsHtml = b.items.map(it => imageRowHtml(textareaId, containerId, it.url, it.caption, it.line)).join('');
+    return '<div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;margin-bottom:8px;background:var(--surface)">'
+      + '<div style="display:flex;align-items:center;gap:6px">'
+      + '<span style="font-size:12px;font-weight:700;flex:1">🖼️ Set: ' + (b.title ? escHtml(b.title) : '<span style="color:var(--text3);font-weight:400">untitled</span>') + '</span>'
+      + '<button type="button" class="item-edit" style="font-size:11px" onclick="editImageSetTitle(\'' + textareaId + '\',\'' + containerId + '\',' + b.startLine + ')" title="Rename set">✏️</button>'
+      + '<button type="button" class="item-del" style="font-size:11px" onclick="deleteImageSet(\'' + textareaId + '\',\'' + containerId + '\',' + b.startLine + ',' + b.endLine + ')" title="Delete whole set">×</button>'
+      + '</div>' + itemsHtml + '</div>';
+  }).join('');
+}
+
+function editImageCaption(textareaId, containerId, line) {
+  const ta = document.getElementById(textareaId);
+  const lines = ta.value.split('\n');
+  const m = (lines[line] || '').trim().match(/^\[img:([^|\]]+)(?:\|([^\]]+))?\]$/);
+  if (!m) { renderImageManager(textareaId, containerId); return; } // answer text changed elsewhere — just refresh
+  let newCaption = window.prompt('Caption for this image (leave blank for none):', m[2] || '');
+  if (newCaption === null) return; // cancelled
+  newCaption = newCaption.trim().replace(/[|\]]/g, '');
+  lines[line] = newCaption ? '[img:' + m[1].trim() + '|' + newCaption + ']' : '[img:' + m[1].trim() + ']';
+  ta.value = lines.join('\n');
+  renderImageManager(textareaId, containerId);
+}
+
+function deleteImageLine(textareaId, containerId, line) {
+  if (!confirm('Remove this image from the answer?')) return;
+  const ta = document.getElementById(textareaId);
+  const lines = ta.value.split('\n');
+  lines.splice(line, 1);
+  ta.value = collapseEmptyImgsets(lines.join('\n'));
+  renderImageManager(textareaId, containerId);
+}
+
+function editImageSetTitle(textareaId, containerId, line) {
+  const ta = document.getElementById(textareaId);
+  const lines = ta.value.split('\n');
+  const m = (lines[line] || '').trim().match(/^\[imgset:(.*)\]$/);
+  if (!m) { renderImageManager(textareaId, containerId); return; }
+  let newTitle = window.prompt('Title for this image set (leave blank for none):', m[1].trim());
+  if (newTitle === null) return;
+  newTitle = newTitle.trim().replace(/[|\]]/g, '');
+  lines[line] = '[imgset:' + newTitle + ']';
+  ta.value = lines.join('\n');
+  renderImageManager(textareaId, containerId);
+}
+
+function deleteImageSet(textareaId, containerId, startLine, endLine) {
+  if (!confirm('Delete this whole image set and all its images?')) return;
+  const ta = document.getElementById(textareaId);
+  const lines = ta.value.split('\n');
+  lines.splice(startLine, endLine - startLine + 1);
+  ta.value = lines.join('\n');
+  renderImageManager(textareaId, containerId);
+}
+
+// A delete can leave a [imgset:...][/imgset] wrapper with nothing inside
+// it — this strips any such now-empty set entirely rather than leaving a
+// stray, invisible-but-pointless tag pair in the answer text.
+function collapseEmptyImgsets(text) {
+  const lines = text.split('\n');
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const m = lines[i].trim().match(/^\[imgset:(.*)\]$/);
+    if (m) {
+      let j = i + 1, hasImage = false;
+      while (j < lines.length && lines[j].trim() !== '[/imgset]') {
+        if (/^\[img:/.test(lines[j].trim())) hasImage = true;
+        j++;
+      }
+      if (!hasImage) { i = j + 1; continue; }
+    }
+    out.push(lines[i]);
+    i++;
+  }
+  return out.join('\n');
+}
+
 function formatToolbarHtml(textareaId) {
   return '<div class="fmt-toolbar">'
     + '<button type="button" class="fmt-btn" onclick="applyFormat(\'' + textareaId + '\',\'bold\')" title="Bold"><b>B</b></button>'
@@ -1177,7 +1314,8 @@ function faqEditForm(f) {
     + '<input type="file" accept="image/*" multiple id="imgSetFileEdit" style="display:none" onchange="insertImageSetIntoAnswer(this,\'editA\',\'imgStatusEdit\')"/>'
     + '<div class="btn-row" style="margin-top:6px"><button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgFileEdit\').click()">📷 Insert image</button>'
     + '<button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgSetFileEdit\').click()">📷 Insert image set</button>'
-    + '<span id="imgStatusEdit" style="font-size:12px;color:var(--text3);align-self:center"></span></div></div>'
+    + '<span id="imgStatusEdit" style="font-size:12px;color:var(--text3);align-self:center"></span></div>'
+    + '<div style="margin-top:10px"><div class="field-label" style="margin-bottom:6px">Images in this answer<span id="imgManagerEditCount"></span></div><div id="imgManagerEdit"></div></div></div>'
     + '<div class="field"><label class="field-label">Intranet path <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="editPath" value="' + escHtml(f.path||'') + '"/></div>'
     + linksEditorHtml('editLinksList')
     + '<div class="field"><label class="field-label">Hidden keywords <span style="font-weight:400;color:var(--text3)">(comma-separated)</span></label>'
@@ -1287,13 +1425,15 @@ function renderAddForm() {
       + '<input type="file" accept="image/*" multiple id="imgSetFileNew" style="display:none" onchange="insertImageSetIntoAnswer(this,\'newA\',\'imgStatusNew\')"/>'
       + '<div class="btn-row" style="margin-top:6px"><button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgFileNew\').click()">📷 Insert image</button>'
       + '<button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgSetFileNew\').click()">📷 Insert image set</button>'
-      + '<span id="imgStatusNew" style="font-size:12px;color:var(--text3);align-self:center"></span></div></div>'
+      + '<span id="imgStatusNew" style="font-size:12px;color:var(--text3);align-self:center"></span></div>'
+      + '<div style="margin-top:10px"><div class="field-label" style="margin-bottom:6px">Images in this answer<span id="imgManagerNewCount"></span></div><div id="imgManagerNew"></div></div></div>'
       + '<div class="field"><label class="field-label">Intranet path <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="newPath" placeholder="e.g. Fusion → HR Self-Service → …"/></div>'
       + linksEditorHtml('newLinksList')
       + '<div class="field"><label class="field-label">Hidden keywords <span style="font-weight:400;color:var(--text3)">(comma-separated)</span></label><input type="text" id="newKeywords" placeholder="e.g. JFK, Kennedy, New York"/></div>'
       + '<div class="field"><label class="field-label">See also tip <span style="font-weight:400;color:var(--text3)">(optional)</span></label><select id="newSeeAlso">' + tipOptions + '</select></div>'
       + '<div class="err" id="addErr"></div>'
       + '<div class="btn-row"><button class="btn btn-ghost" onclick="switchAdminSection(\'faqs\')">Cancel</button><button class="btn btn-primary" onclick="addFaq()">Add FAQ</button></div>';
+    renderImageManager('newA', 'imgManagerNew');
   } else if (type === 'tip') {
     body.innerHTML = '<div class="field"><label class="field-label">Title</label><input type="text" id="newTTitle" placeholder="Short, actionable title"/></div>'
       + '<div class="field"><label class="field-label">Short teaser</label><textarea id="newTText" placeholder="Be specific and practical." rows="3"></textarea>'
