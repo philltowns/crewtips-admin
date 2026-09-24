@@ -876,6 +876,53 @@ function renderAdminSection() {
 
 var editLinksList = [];
 var newLinksList = [];
+var editPathSteps = [];
+var newPathSteps = [];
+
+// ─────────────────────────────────────────────
+// ADMIN — INTRANET PATH STEP EDITOR
+// ─────────────────────────────────────────────
+// Same repeatable-row pattern as the Related links editor below — each
+// step is its own box, joined with → automatically, rather than the
+// admin having to type the arrow character by hand and get the spacing
+// consistent themselves.
+function pathStepsFromString(pathStr) {
+  const str = (pathStr || '').trim();
+  if (!str) return [];
+  if (str.indexOf('→') === -1) return [str]; // no arrow found — treat as one step rather than losing it
+  return str.split('→').map(s => s.trim()).filter(Boolean);
+}
+
+function pathStringFromSteps(listVarName) {
+  return window[listVarName].map(s => s.trim()).filter(Boolean).join(' → ');
+}
+
+function pathStepRowsHtml(listVarName) {
+  return window[listVarName].map((step, i) =>
+    '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
+    + (i > 0 ? '<span style="color:var(--text3);font-size:13px;width:14px;flex-shrink:0;text-align:center">→</span>' : '<span style="width:14px;flex-shrink:0"></span>')
+    + '<input type="text" value="' + escHtml(step) + '" placeholder="' + (i === 0 ? 'e.g. Fusion' : 'Next step') + '" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:13px;font-family:var(--font)" oninput="window[\'' + listVarName + '\'][' + i + ']=this.value"/>'
+    + '<button type="button" class="item-del" onclick="removePathStep(\'' + listVarName + '\',' + i + ')">×</button>'
+    + '</div>'
+  ).join('');
+}
+
+function pathEditorHtml(listVarName) {
+  return '<div class="field"><label class="field-label">Intranet path <span style="font-weight:400;color:var(--text3)">(optional)</span></label>'
+    + '<div id="' + listVarName + 'Rows">' + pathStepRowsHtml(listVarName) + '</div>'
+    + '<button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="addPathStep(\'' + listVarName + '\')">+ Add step</button>'
+    + '<div class="field-hint">One box per step of the menu path — they\'re joined with → automatically (e.g. Fusion → HR Self-Service → Payslips).</div></div>';
+}
+
+function addPathStep(listVarName) {
+  window[listVarName].push('');
+  document.getElementById(listVarName + 'Rows').innerHTML = pathStepRowsHtml(listVarName);
+}
+
+function removePathStep(listVarName, i) {
+  window[listVarName].splice(i, 1);
+  document.getElementById(listVarName + 'Rows').innerHTML = pathStepRowsHtml(listVarName);
+}
 let adminImagesList = null;
 let adminImagesLoading = false;
 let adminImagesError = null;
@@ -1301,6 +1348,7 @@ function applyBullet(textareaId) {
 // ─────────────────────────────────────────────
 function faqEditForm(f) {
   editLinksList = (f.links || []).map(l => ({ ...l }));
+  editPathSteps = pathStepsFromString(f.path);
   const tipOptions = '<option value="">— None —</option>'
     + appData.tips.map(t => '<option value="' + t.id + '" ' + (f.seeAlso == t.id ? 'selected' : '') + '>' + escHtml(t.icon||'💡') + ' ' + escHtml(t.title) + '</option>').join('');
   return '<div class="edit-form-header">Editing FAQ</div>'
@@ -1316,7 +1364,7 @@ function faqEditForm(f) {
     + '<button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgSetFileEdit\').click()">📷 Insert image set</button>'
     + '<span id="imgStatusEdit" style="font-size:12px;color:var(--text3);align-self:center"></span></div>'
     + '<div style="margin-top:10px"><div class="field-label" style="margin-bottom:6px">Images in this answer<span id="imgManagerEditCount"></span></div><div id="imgManagerEdit"></div></div></div>'
-    + '<div class="field"><label class="field-label">Intranet path <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="editPath" value="' + escHtml(f.path||'') + '"/></div>'
+    + pathEditorHtml('editPathSteps')
     + linksEditorHtml('editLinksList')
     + '<div class="field"><label class="field-label">Hidden keywords <span style="font-weight:400;color:var(--text3)">(comma-separated)</span></label>'
     + '<input type="text" id="editKeywords" value="' + escHtml(f.keywords||'') + '" placeholder="e.g. JFK, Kennedy, New York"/>'
@@ -1332,7 +1380,7 @@ async function saveFaqEdit(id) {
   const q = document.getElementById('editQ').value.trim();
   const a = document.getElementById('editA').value.trim();
   const cat = document.getElementById('editCat').value;
-  const path = document.getElementById('editPath').value.trim();
+  const path = pathStringFromSteps('editPathSteps');
   const links = validLinks('editLinksList');
   const keywords = document.getElementById('editKeywords').value.trim();
   const seeAlso = document.getElementById('editSeeAlso').value || null;
@@ -1416,6 +1464,7 @@ function renderAddForm() {
   const tipOptions = '<option value="">— None —</option>' + appData.tips.map(t => '<option value="' + t.id + '">' + escHtml(t.icon||'💡') + ' ' + escHtml(t.title) + '</option>').join('');
   if (type === 'faq') {
     newLinksList = [];
+    newPathSteps = [];
     body.innerHTML = '<div class="field"><label class="field-label">Question</label><input type="text" id="newQ" placeholder="e.g. How do I request a duty swap?"/></div>'
       + '<div class="field"><label class="field-label">Category</label><select id="newCat">' + catOptions('general') + '</select></div>'
       + '<div class="field"><label class="field-label">Answer</label>'
@@ -1427,7 +1476,7 @@ function renderAddForm() {
       + '<button type="button" class="btn btn-ghost" style="font-size:12px;padding:7px 12px" onclick="document.getElementById(\'imgSetFileNew\').click()">📷 Insert image set</button>'
       + '<span id="imgStatusNew" style="font-size:12px;color:var(--text3);align-self:center"></span></div>'
       + '<div style="margin-top:10px"><div class="field-label" style="margin-bottom:6px">Images in this answer<span id="imgManagerNewCount"></span></div><div id="imgManagerNew"></div></div></div>'
-      + '<div class="field"><label class="field-label">Intranet path <span style="font-weight:400;color:var(--text3)">(optional)</span></label><input type="text" id="newPath" placeholder="e.g. Fusion → HR Self-Service → …"/></div>'
+      + pathEditorHtml('newPathSteps')
       + linksEditorHtml('newLinksList')
       + '<div class="field"><label class="field-label">Hidden keywords <span style="font-weight:400;color:var(--text3)">(comma-separated)</span></label><input type="text" id="newKeywords" placeholder="e.g. JFK, Kennedy, New York"/></div>'
       + '<div class="field"><label class="field-label">See also tip <span style="font-weight:400;color:var(--text3)">(optional)</span></label><select id="newSeeAlso">' + tipOptions + '</select></div>'
@@ -1463,7 +1512,7 @@ async function addFaq() {
   const q = document.getElementById('newQ').value.trim();
   const a = document.getElementById('newA').value.trim();
   const cat = document.getElementById('newCat').value;
-  const path = document.getElementById('newPath').value.trim();
+  const path = pathStringFromSteps('newPathSteps');
   const links = validLinks('newLinksList');
   const keywords = document.getElementById('newKeywords').value.trim();
   const seeAlso = document.getElementById('newSeeAlso').value || null;
