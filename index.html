@@ -378,6 +378,37 @@ function toDirectDropboxUrl(shareUrl) {
   } catch(e) { return shareUrl; }
 }
 
+// Remembers where the cursor last was in each text box. Tapping the
+// Insert image button takes focus off the box, and the upload takes a few
+// seconds, so the position is stored as the pilot works rather than read
+// at the end. If they never clicked into the box, there is no stored
+// position and the image goes at the end, as it always used to.
+['click', 'keyup', 'input', 'select', 'focusout'].forEach(evt => {
+  document.addEventListener(evt, e => {
+    const t = e.target;
+    if (t && t.tagName === 'TEXTAREA' && t.id) t.dataset.caret = String(t.selectionStart);
+  }, true);
+});
+
+// Puts an image tag (or a whole [imgset] block) at the remembered cursor
+// position. Image tags must sit on their own line, so a line break is added
+// before and after where needed - a cursor in the middle of a paragraph
+// splits it in two with the image between.
+function insertBlockAtCaret(textareaId, block) {
+  const ta = document.getElementById(textareaId);
+  const v = ta.value;
+  const stored = ta.dataset.caret;
+  const pos = stored === undefined ? v.length : Math.min(Number(stored) || 0, v.length);
+  const before = v.substring(0, pos);
+  const after = v.substring(pos);
+  const lead = (before === '' || before.endsWith('\n')) ? '' : '\n';
+  const trail = after.startsWith('\n') ? '' : '\n';
+  ta.value = before + lead + block + trail + after;
+  const newPos = (before + lead + block + trail).length;
+  ta.dataset.caret = String(newPos);
+  ta.setSelectionRange(newPos, newPos);
+}
+
 // Which "Images in this ..." panel belongs to which textarea
 function imageManagerIdFor(textareaId) {
   return { editA: 'imgManagerEdit', newA: 'imgManagerNew', editGBody: 'imgManagerGuideEdit', newGBody: 'imgManagerGuideNew' }[textareaId];
@@ -404,8 +435,7 @@ async function insertImageIntoAnswer(fileInputEl, textareaId, statusElId) {
     let caption = (window.prompt('Add a caption for this image? (optional — shown on the "view image" button)') || '').trim();
     caption = caption.replace(/[|\]]/g, ''); // these characters would break the tag syntax
     const tag = caption ? '[img:' + directUrl + '|' + caption + ']' : '[img:' + directUrl + ']';
-    const ta = document.getElementById(textareaId);
-    ta.value = ta.value + (ta.value === '' || ta.value.endsWith('\n') ? '' : '\n') + tag + '\n';
+    insertBlockAtCaret(textareaId, tag);
     renderImageManager(textareaId, imageManagerIdFor(textareaId));
     statusEl.textContent = '';
     showToast('Image uploaded and inserted ✓');
@@ -458,8 +488,7 @@ async function insertImageSetIntoAnswer(fileInputEl, textareaId, statusElId) {
       lines.push(caption ? '[img:' + directUrl + '|' + caption + ']' : '[img:' + directUrl + ']');
     }
     lines.push('[/imgset]');
-    const ta = document.getElementById(textareaId);
-    ta.value = ta.value + (ta.value === '' || ta.value.endsWith('\n') ? '' : '\n') + lines.join('\n') + '\n';
+    insertBlockAtCaret(textareaId, lines.join('\n'));
     renderImageManager(textareaId, imageManagerIdFor(textareaId));
     statusEl.textContent = '';
     showToast('Image set uploaded and inserted ✓');
