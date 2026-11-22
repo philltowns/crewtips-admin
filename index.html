@@ -1328,10 +1328,18 @@ function parseImageBlocks(text) {
   return blocks;
 }
 
-function imageRowHtml(textareaId, containerId, url, caption, line) {
+// move = { up: lineNumberOfImageAbove | null, down: lineNumberOfImageBelow | null }
+// Only passed for images inside a set. A missing neighbour keeps its arrow
+// in place but invisible, so the pencil and cross stay lined up.
+function imageRowHtml(textareaId, containerId, url, caption, line, move) {
+  const arrow = (other, sym, title) => '<button type="button" class="item-edit" style="font-size:13px;padding:2px 6px;' + (other === null ? 'visibility:hidden' : '') + '" '
+    + (other === null ? 'tabindex="-1" ' : 'onclick="moveImageLine(\'' + textareaId + '\',\'' + containerId + '\',' + line + ',' + other + ')" ')
+    + 'title="' + title + '">' + sym + '</button>';
+  const moveHtml = move ? arrow(move.up, '↑', 'Move up') + arrow(move.down, '↓', 'Move down') : '';
   return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border)">'
     + '<img src="' + escHtml(url) + '" style="width:36px;height:36px;object-fit:cover;border-radius:6px;flex-shrink:0;background:var(--border)" onerror="this.style.visibility=\'hidden\'"/>'
     + '<span style="flex:1;font-size:12px;color:' + (caption ? 'var(--text)' : 'var(--text3)') + '">' + (caption ? escHtml(caption) : 'No caption') + '</span>'
+    + moveHtml
     + '<button type="button" class="item-edit" style="font-size:11px" onclick="editImageCaption(\'' + textareaId + '\',\'' + containerId + '\',' + line + ')" title="Edit caption">✏️</button>'
     + '<button type="button" class="item-del" style="font-size:11px" onclick="deleteImageLine(\'' + textareaId + '\',\'' + containerId + '\',' + line + ')" title="Remove image">×</button>'
     + '</div>';
@@ -1348,7 +1356,10 @@ function renderImageManager(textareaId, containerId) {
   if (!blocks.length) { container.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:4px 0">No images in this answer yet — use the buttons above to add some.</div>'; return; }
   container.innerHTML = blocks.map(b => {
     if (b.type === 'image') return imageRowHtml(textareaId, containerId, b.url, b.caption, b.line);
-    const itemsHtml = b.items.map(it => imageRowHtml(textareaId, containerId, it.url, it.caption, it.line)).join('');
+    const itemsHtml = b.items.map((it, i) => imageRowHtml(textareaId, containerId, it.url, it.caption, it.line, {
+      up: i > 0 ? b.items[i - 1].line : null,
+      down: i < b.items.length - 1 ? b.items[i + 1].line : null
+    })).join('');
     return '<div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;margin-bottom:8px;background:var(--surface)">'
       + '<div style="display:flex;align-items:center;gap:6px">'
       + '<span style="font-size:12px;font-weight:700;flex:1">🖼️ Set: ' + (b.title ? escHtml(b.title) : '<span style="color:var(--text3);font-weight:400">untitled</span>') + '</span>'
@@ -1367,6 +1378,20 @@ function editImageCaption(textareaId, containerId, line) {
   if (newCaption === null) return; // cancelled
   newCaption = newCaption.trim().replace(/[|\]]/g, '');
   lines[line] = newCaption ? '[img:' + m[1].trim() + '|' + newCaption + ']' : '[img:' + m[1].trim() + ']';
+  ta.value = lines.join('\n');
+  renderImageManager(textareaId, containerId);
+}
+
+// Swaps an image with its neighbour inside a set. Works on the textarea
+// text directly, like every other edit in this panel, so nothing is saved
+// until Save/Add is pressed. If either line is no longer an image tag (the
+// text was edited by hand meanwhile) it just refreshes instead of guessing.
+function moveImageLine(textareaId, containerId, line, otherLine) {
+  const ta = document.getElementById(textareaId);
+  const lines = ta.value.split('\n');
+  const isImg = l => /^\[img:([^|\]]+)(?:\|([^\]]+))?\]$/.test((l || '').trim());
+  if (!isImg(lines[line]) || !isImg(lines[otherLine])) { renderImageManager(textareaId, containerId); return; }
+  [lines[line], lines[otherLine]] = [lines[otherLine], lines[line]];
   ta.value = lines.join('\n');
   renderImageManager(textareaId, containerId);
 }
@@ -1582,8 +1607,10 @@ function guideFormHtml(mode, g) {
   const mgr = isEdit ? 'imgManagerGuideEdit' : 'imgManagerGuideNew';
   const typeOptions = Object.entries(GUIDE_TYPES).map(([k, v]) => '<option value="' + k + '" ' + (k === type ? 'selected' : '') + '>' + escHtml(v.label) + '</option>').join('');
   return (isEdit ? '<div class="edit-form-header">Editing ' + escHtml(GUIDE_TYPES[type].label.toLowerCase()) + '</div>' : '')
-    + '<div class="field"><label class="field-label">Type</label><select id="' + p + 'GType">' + typeOptions + '</select>'
-    + '<div class="field-hint">Top Tips are shown first in the Guides tab. Guides follow below.</div></div>'
+    + (isEdit
+      ? '<div class="field"><label class="field-label">Type</label><select id="' + p + 'GType">' + typeOptions + '</select>'
+        + '<div class="field-hint">Top Tips are shown first in the Guides tab. Guides follow below.</div></div>'
+      : '<input type="hidden" id="' + p + 'GType" value="' + type + '"/>')
     + '<div class="field"><label class="field-label">Title</label><input type="text" id="' + p + 'GTitle" value="' + escHtml(g.title || '') + '" placeholder="Short, descriptive title"/></div>'
     + '<div class="field"><label class="field-label">Short teaser</label><textarea id="' + p + 'GText" rows="3" placeholder="One or two sentences - shown in the list and at the top of the page.">' + escHtml(g.text || '') + '</textarea>'
     + '<div class="field-hint">Shown in the Guides list and at the top of the page. Keep it brief.</div></div>'
