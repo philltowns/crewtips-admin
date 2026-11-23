@@ -1459,7 +1459,9 @@ function formatToolbarHtml(textareaId, opts) {
     + '<button type="button" class="fmt-btn" onclick="applyBullet(\'' + textareaId + '\')" title="Bullet list">• List</button>'
     + (withHeading ? '<button type="button" class="fmt-btn" onclick="applyHeading(\'' + textareaId + '\')" title="Make this line a section heading"><b>H</b></button>' : '')
     + '<button type="button" class="fmt-btn" onclick="toggleGuideLinkPicker(\'' + textareaId + '\')" title="Link to a guide or top tip">🔗 Guide link</button>'
+    + '<button type="button" class="fmt-btn" onclick="toggleWebLinkPanel(\'' + textareaId + '\')" title="Link to a website or map">🌐 Web link</button>'
     + '</div>'
+    + '<div id="' + textareaId + 'WebPanel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px"></div>'
     + '<div id="' + textareaId + 'LinkPicker" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px"></div>';
 }
 
@@ -1495,6 +1497,43 @@ function toggleGuideLinkPicker(textareaId) {
       + '<div class="field-hint">Inserts a link at the cursor. It keeps working if the guide is renamed.</div>'
     : '<div class="field-hint" style="margin:0">No guides or top tips to link to yet.</div>';
   box.style.display = 'block';
+}
+
+// Web link panel: inserts [link:URL|text] at the cursor. http/https only.
+function toggleWebLinkPanel(textareaId) {
+  const box = document.getElementById(textareaId + 'WebPanel');
+  const ta = document.getElementById(textareaId);
+  if (!box || !ta) return;
+  if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+  const selected = ta.value.substring(ta.selectionStart, ta.selectionEnd).replace(/[\[\]|\n]/g, ' ').trim();
+  box.innerHTML = '<input type="url" id="' + textareaId + 'WebUrl" placeholder="https://maps.app.goo.gl/..." style="width:100%;margin-bottom:6px">'
+    + '<div style="display:flex;gap:6px;align-items:center"><input type="text" id="' + textareaId + 'WebLabel" placeholder="Text to show, e.g. Hilton Garden Inn" value="' + escHtml(selected) + '" style="flex:1;min-width:0">'
+    + '<button type="button" class="btn btn-primary" style="flex:none;padding:7px 12px;font-size:12px" onclick="insertWebLink(\'' + textareaId + '\')">Insert</button></div>'
+    + '<div class="field-hint" id="' + textareaId + 'WebMsg">Paste a web address (http or https). Map links from the Share button work well.</div>';
+  box.style.display = 'block';
+}
+
+function insertWebLink(textareaId) {
+  const urlEl = document.getElementById(textareaId + 'WebUrl');
+  const labelEl = document.getElementById(textareaId + 'WebLabel');
+  const msg = document.getElementById(textareaId + 'WebMsg');
+  const ta = document.getElementById(textareaId);
+  if (!urlEl || !ta) return;
+  const url = urlEl.value.trim();
+  if (!/^https?:\/\/[^\s"'<>\[\]|]+$/i.test(url)) {
+    if (msg) { msg.textContent = 'That needs to be a full web address starting with http:// or https:// (and no spaces, brackets or | characters).'; msg.style.color = 'var(--red)'; }
+    return;
+  }
+  const label = (labelEl.value || '').replace(/[\[\]|\n]/g, ' ').trim();
+  const tag = '[link:' + url + (label ? '|' + label : '') + ']';
+  const stored = ta.dataset.caret;
+  const s = ta.selectionStart, e = ta.selectionEnd;
+  ta.value = ta.value.substring(0, s) + tag + ta.value.substring(e);
+  const pos = s + tag.length;
+  ta.focus();
+  ta.setSelectionRange(pos, pos);
+  ta.dataset.caret = String(pos);
+  document.getElementById(textareaId + 'WebPanel').style.display = 'none';
 }
 
 function insertGuideLink(textareaId) {
